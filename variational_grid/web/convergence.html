@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light"><title>CL 剥头皮 / BZ 对冲模拟</title>
+  <link rel="icon" href="data:,"><link rel="stylesheet" href="/qqq.css"><link rel="stylesheet" href="/convergence.css">
+  <script defer src="/hub.js"></script><script defer src="/model.js"></script><script defer src="/strategies.js"></script><script defer src="/convergence.js"></script><script defer src="/var-session.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">跳到监控内容</a>
+<main id="main">
+  <nav id="strategy-navigation" class="basis-note actions" aria-label="模拟策略" hidden></nav>
+  <header class="topbar"><div><span class="eyebrow">VARIATIONAL · PAPER LAB</span><h1>CL 剥头皮 / BZ 对冲模拟</h1><p>CL 多头逐批止盈 · BZ 空头随 CL 成交等桶增减</p></div><div class="actions"><span id="status" class="status" role="status">连接中</span><button id="refresh" class="button">刷新</button><button id="var-session-open" class="button">更新 Var token</button><button id="reset" class="button" disabled>重置本组</button></div></header>
+  <div class="basis-note"><strong>独立模拟账户</strong><span>CL 后续 RFQ 报价满足限价才成交，BZ 同步对冲。CL 的止盈不保证组合盈利；收益未计资金费与隔夜费。</span></div>
+  <div id="notice" class="notice" role="status" hidden></div><div id="reset-message" class="notice" role="status" hidden></div>
+  <section class="market-strip convergence-market" aria-label="最新行情与价差，价格单位 USDC 每桶">
+    <div><span>CL 标记价 / USDC/桶</span><strong id="cl-mark">—</strong><small id="cl-state">状态未知</small><small id="cl-source">报价时间 —</small></div>
+    <div><span>BZ 标记价 / USDC/桶</span><strong id="bz-mark">—</strong><small id="bz-state">状态未知</small><small id="bz-source">报价时间 —</small></div>
+    <div><span>观察价差 BZ − CL / USDC/桶</span><strong id="spread-value">—</strong><small>仅作观察，不触发开仓或止盈</small></div>
+    <div><span>CL 逐批价格止盈目标</span><strong id="take-profit">—</strong><small>以本批 CL 实际入场价计算</small><small id="freshness">等待第一份有效采样</small></div>
+  </section>
+  <section aria-labelledby="overview-title"><div class="section-head"><div><h2 id="overview-title">本组账户 <span class="unit">USDC</span></h2><p id="experiment-info">等待本轮参数与采样</p></div><a class="button" href="#charts">查看曲线</a></div><div id="overview" class="convergence-overview"><div class="empty">正在读取模拟账本…</div></div><p id="execution-state" class="small"></p><p id="session-schedule" class="small"></p></section>
+  <div class="chart-toolbar"><p>从本轮开始累计 · 切换窗口不改变账户损益</p><div class="segmented" role="group" aria-label="曲线时间范围"><button data-range="1h">1 小时</button><button data-range="24h" aria-pressed="true">24 小时</button><button data-range="7d">7 天</button></div></div>
+  <section id="charts" class="charts-layout" aria-label="组合收益与价差历史">
+    <article class="panel"><div class="panel-head"><h2>双腿累计净收益 <span class="unit">USDC</span></h2><p>已实现 + 含预计退出成本的持仓浮盈亏</p></div><div class="legend"><span class="pnl-key"><i class="key"></i>CL 多 + BZ 空 · 组合净值</span></div><div id="pnl-chart" class="chart" aria-label="双腿累计净收益曲线"></div></article>
+    <article class="panel"><div class="panel-head"><h2>观察价差 <span class="unit">USDC/桶</span></h2><p>两腿价格关系，仅作观察，不参与开仓或止盈判断</p></div><div class="legend"><span class="spread-key"><i class="key"></i>价差 BZ − CL</span></div><div id="spread-chart" class="chart" aria-label="BZ 减 CL 观察价差曲线"></div></article>
+  </section>
+  <section class="sample-panel" aria-label="历史采样明细"><div class="inspect"><label for="sample">查看采样</label><input id="sample" type="range" min="0" max="0" value="0" disabled><output id="sample-time">—</output><button id="latest-sample" class="button">跟随最新</button></div><p id="sample-values" class="small"></p><p id="history-note" class="small" role="status"></p></section>
+  <section class="panel ledger-panel" aria-labelledby="orders-title"><div class="panel-head"><h2 id="orders-title">CL 模拟挂单</h2><p>后续新 RFQ 买卖价满足限价后才模拟成交；不代表真实交易所订单。</p></div><div id="orders"></div><p id="orders-note" class="detail-note"></p></section>
+  <section class="panel detail-panel" aria-labelledby="detail-title"><h2 id="detail-title" class="sr-only">本组模拟账本</h2><div class="detail-toolbar"><div class="tabs" role="tablist" aria-label="账本明细"><button id="tab-positions" role="tab" data-view="positions" aria-selected="true" aria-controls="detail-content">逐批持仓</button><button id="tab-trades" role="tab" data-view="trades" aria-selected="false" aria-controls="detail-content" tabindex="-1">已平仓记录</button><button id="tab-parameters" role="tab" data-view="parameters" aria-selected="false" aria-controls="detail-content" tabindex="-1">参数与口径</button></div><button id="export" class="button" hidden>导出成交 CSV</button></div><div id="detail-content" role="tabpanel" aria-labelledby="tab-positions"></div><div id="pagination" class="pagination" hidden><span id="page-label"></span><div><button id="previous" class="button">上一页</button><button id="next" class="button">下一页</button></div></div><p id="detail-note" class="detail-note"></p></section>
+  <details class="method"><summary>进场、止盈与休市规则</summary><div><p>CL 只做多，每批 1 桶，最多占用 30 批。开仓单挂在近报价位置；后续新 RFQ 的 CL ask 加滑点不高于开仓限价时，才模拟买入 CL 并同步卖出等桶 BZ。开仓不检查价差门槛或旧持仓价格距离，实际仍受容量、冷却、保证金和双侧有效报价限制。</p><p>每批 CL 止盈价 = 本批实际入场价 ×（1 + 0.1%）。后续新 RFQ 的 CL bid 扣滑点不低于止盈价时，卖出该批 CL 并回补对应 BZ。即使该批双腿合计亏损，CL 仍按自己的止盈条件成交。单腿与组合净收益分别展示，均含账本手续费；浮盈亏估计退出成本。价差 BZ − CL 仅作观察。</p><p>首次开仓无需冷却；基础等待 450 秒，按待止盈批数 0–4、5–9、10–19、20–29 分别等待 112.5、225、450、900 秒。CL 止盈关闭后，本轮可免冷却；仍需满足其他开仓条件。开仓单挂出 20 秒后，每 5 秒允许向上改价，实际检查按策略采样进行。每次一桶 RFQ 采样最多支持一笔一桶 CL 成交和对应 BZ 对冲动作。该模型不模拟真实队列优先级。</p><p>任一侧预定休市前 5 分钟暂停，撤销模拟开仓及止盈订单，保留两腿持仓；实际休市同样暂停。双侧开市并获得新报价后恢复，恢复首帧只重建订单，不成交。未获得可靠关闭时间时显示“关闭时间未知”。</p><p>保证金按模拟杠杆估算，最多批数只是上限，不保证能全部开满。曲线缺失区间断线显示，历史窗口不改变本轮累计收益。净收益未计资金费与隔夜费。</p></div></details>
+  <footer><span>仅模拟 · 所有时间均为北京时间（UTC+8）</span><span>CL LONG / BZ SHORT · 独立账本</span></footer>
+  <noscript><p class="notice">本页需要启用 JavaScript 才能读取模拟账本。</p></noscript>
+  <dialog id="var-session-dialog" aria-labelledby="var-session-title"><form id="var-session-form" autocomplete="off"><h2 id="var-session-title">更新 Var token</h2><p>粘贴已登录 Variational 的 vr-token 值。验证成功后保存，策略自动读取新会话。</p><p id="var-session-state" class="session-state">正在读取会话状态…</p><label for="var-session-input">新的 vr-token</label><input id="var-session-input" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" maxlength="8192" required aria-describedby="var-session-help"><p id="var-session-help" class="session-help">此会话供 Var 策略共用。更新不会重置任何策略的仓位或损益。</p><p id="var-session-result" class="session-result" role="status" aria-live="polite" hidden></p><div class="dialog-actions"><button id="var-session-cancel" class="button" type="button">取消</button><button id="var-session-save" class="button primary" type="submit" disabled>验证并保存</button></div></form></dialog>
+  <dialog id="reset-dialog" aria-labelledby="reset-title"><h2 id="reset-title">归档并重置 CL / BZ 本组</h2><p>只归档并重置 CL 剥头皮 / BZ 对冲的仓位、模拟订单、损益和成交记录，保留本组参数。QQQ / US100 策略与账本保持不变。重置不产生模拟平仓成交。</p><div class="dialog-actions"><button id="reset-cancel" class="button">取消</button><button id="reset-confirm" class="button primary">仅重置 CL / BZ</button></div></dialog>
+</main>
+</body></html>

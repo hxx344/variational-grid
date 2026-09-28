@@ -223,6 +223,7 @@ def main(argv=None):
     sub.set_defaults(function=reset_comparison)
     sub = commands.add_parser("dashboard", help="Paper web monitor through a localhost SSH tunnel")
     sub.add_argument("--experiments", default="experiments.example.json")
+    sub.add_argument("--convergence-experiments", help="Optional independent CL-long/BZ-short companion on the same monitor")
     sub.add_argument("--port", type=int, default=9876)
     sub.set_defaults(function=serve_dashboard)
     args = parser.parse_args(argv)

@@ -1,8 +1,8 @@
 # Variational Grid · QQQ / US100 对冲剥头皮模拟
 
-当前默认部署 **Lighter QQQ 只做多挂单剥头皮 + Variational US100 对冲**。对照三种止盈比例，共三组，统一净敞口阈值 3000 USDC，单组最多 30 个批次、每批 1000 USDC，不设新开仓距离门槛；部署和统计口径见文末。CL/BZ 价差网格和库存组合仅保留历史兼容入口，与 QQQ 共用同一个模拟服务，不会随 QQQ 同时启动。
+当前默认部署 **Lighter QQQ 只做多挂单剥头皮 + Variational US100 对冲**。对照三种止盈比例，共三组，统一净敞口阈值 3000 USDC，单组最多 30 个批次、每批 1000 USDC，不设新开仓距离门槛；部署和统计口径见文末。现在可额外开启 **Variational CL 多头剥头皮 + BZ 等桶空头对冲**，独立服务、配置和账本，入口仍在同一个 Var 模块。旧 CL/BZ 价差网格和库存组合仅保留历史兼容入口，不会随 QQQ 同时启动。
 
-CL/BZ 模式从 Variational Omni 的前端接口读取真实行情，在本地模拟 CL、BZ 等桶数双腿市价成交。以 **BZ − CL 的最近 3 日平均价差**为中枢。无需钱包私钥；该模式使用已经登录的 `vr-token` Cookie 请求与每腿桶数相匹配的指示性买卖报价。
+历史 CL/BZ 价差网格从 Variational Omni 的前端接口读取真实行情，在本地模拟 CL、BZ 等桶数双腿市价成交，以 **BZ − CL 的最近 3 日平均价差**为中枢。新增 CL 剥头皮不使用这个中枢。两者都无需钱包私钥，使用已经登录的 `vr-token` Cookie 请求与每腿桶数相匹配的指示性买卖报价。
 
 **仅获取公开行情不需要令牌。** 2026-09-19 无 Cookie 实测：前端 K 线、合约元数据以及官方公开 `GET /metadata/stats` 均返回 200，CL/BZ 的 `POST /api/quotes/indicative` 返回 403；同一报价接口使用现有会话成功。CL/BZ 模式选择后一种按数量报价，并在启动时检查登录状态，所以仍需令牌。官方公开统计也有买卖价，但按固定名义金额分档，文档允许最长 600 秒缓存；不能直接当成按当前每腿桶数取得的实时成交报价。QQQ 模式现已切换为 Var token 鉴权报价，Lighter 侧仍读取公开行情，详见文末。
 
@@ -10,7 +10,34 @@ CL/BZ 模式从 Variational Omni 的前端接口读取真实行情，在本地�
 
 全量审阅结果见 [Var 模块审核](docs/var-audit-2026-09-26.md)。QQQ / US100 另提供 [离线执行故障演练](docs/execution-readiness.md)，运行 `python -m variational_grid.execution_drill` 验证重启对账、幂等和风险预留。未来 Variational 交易采用前端 `vr-token` 路径；真实交易协议仍待核实，演练不连接账户。
 
-US100 休市时暂停新开仓和 Var 调仓，等待开市及有效报价；休市本身不表示 token 失效。QQQ 已有止盈仍按有效 Lighter 行情处理，因此 Var 空头可能暂时无法同步回补。页面分别展示市场状态、鉴权状态和报价时效，不会用休市前的旧报价确认刚更新的 token；超过 120 秒的市场观测显示“状态待刷新”，不会自动推断已开市。
+任一腿休市时暂停双腿模拟成交，撤掉本策略的模拟开仓与止盈挂单，保留持仓；有可靠日程时提前 5 分钟执行。恢复必须等待两腿市场开放及暂停屏障之后的新报价，恢复首帧只重建订单。休市本身不表示 token 失效，过期市场观测也不会被自动推断为开市。
+
+## 新增 CL 剥头皮 / BZ 对冲
+
+在当前 QQQ 模块上增加这一组：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hxx344/variational-grid/main/install.sh | sudo bash -s -- --qqq-hedge --with-cl-bz
+```
+
+页面顶部可切换 QQQ / US100 和 CL 剥头皮 / BZ 对冲，后者路径为 `/cl-bz`。安装器保留已有配置、token、QQQ 及历史账本；后续重复升级记住启用状态，无变化时跳过重装、验证和重启。新服务是 `variational-grid-cl-bz.service`，配置 `/etc/variational-grid/cl-bz-scalper.json`，数据 `/var/lib/variational-grid/cl-bz-scalper-v1`。这组重置只归档并清空自身账本。
+
+默认每批 **1 桶，最多 30 批（含待开仓单），CL 单批价格止盈 0.1%**。CL 实际模拟买入后立即建立该批独立止盈意图，并等桶卖出 BZ；CL 止盈成交时回补对应 BZ。止盈价固定为该批 CL 成交价 × 1.001，BZ 或组合亏损不会阻止 CL 止盈。价差 BZ−CL 仅供观察，不决定开仓或止盈。页面分别展示 CL、BZ、组合损益；价格止盈比例不等于扣费后的组合收益率。
+
+这里只模拟本地限价意图：CL 买入要求后续新报价的 `ask × (1 + 滑点)` 不高于限价，止盈要求 `bid × (1 − 滑点)` 不低于止盈价。两腿均请求每批桶数的 RFQ 指示性报价，校验数量限制、时效和时间差；同一份双腿报价最多处理一批动作，止盈优先。不借用 Lighter 的 Maker 排队模型，也不向 Var 发送挂单或撤单。
+
+开仓候选价取 CL 买卖中价与已有止盈价的较低者；仅保留一张待开仓意图，20 秒后每 5 秒检查上移。基础冷却 450 秒，依持仓批数使用四分之一、二分之一、原值或两倍；持仓下降时豁免当轮冷却。模拟初始资金 1000 USDC、杠杆 5 倍，保证金预算为权益的 80%，回撤达到初始资金的 20% 时持久暂停新开仓；已有止盈继续受市场联动限制。默认单腿单次滑点 1 bp、手续费 0；这些是模拟参数，并非交易所费率，收益未计资金费等持仓成本。
+
+CL/BZ 元数据若没有提供交易日程，页面明确显示关闭时间未知；此时不能保证提前 5 分钟撤单，只能在可靠关闭、只减仓或失效状态出现时暂停。不会套用 US100 日程。暂停、恢复屏障、固定止盈价及两腿成交随账本原子持久化；故障重放不重复成交。行情缓存保留原始来源时间，暂停采样不会把旧估值变成新行情。快照与历史分开加载，图表读取限时并最多采样约 900 点，跨暂停区间断线。
+
+手动运行对应命令：
+
+```powershell
+python -m variational_grid compare --experiments cl-bz-scalper.example.json
+python -m variational_grid dashboard --experiments qqq-hedge.example.json --convergence-experiments cl-bz-scalper.example.json --port 9876
+```
+
+本地先复制并调整示例的 `base_config`，使两组使用同一个已导入会话的配置；修改策略参数需选择新的 `output_dir`，避免重解释已有成交。
 
 ## 工作台入口
 

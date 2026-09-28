@@ -4,11 +4,12 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light"><title>QQQ / US100 模拟监控</title>
   <link rel="icon" href="data:,"><link rel="stylesheet" href="/qqq.css">
-  <script defer src="/hub.js"></script><script defer src="/model.js"></script><script defer src="/qqq.js"></script><script defer src="/var-session.js"></script>
+  <script defer src="/hub.js"></script><script defer src="/model.js"></script><script defer src="/strategies.js"></script><script defer src="/qqq.js"></script><script defer src="/var-session.js"></script>
 </head>
 <body>
 <a class="skip" href="#main">跳到监控内容</a>
 <main id="main">
+  <nav id="strategy-navigation" class="basis-note actions" aria-label="模拟策略" hidden></nav>
   <header class="topbar"><div><span class="eyebrow">LIGHTER × VARIATIONAL · PAPER LAB</span><h1 id="page-title">QQQ / US100 模拟监控</h1><p id="strategy-description">Lighter QQQ 做多，Variational US100 做空对冲。</p></div><div class="actions"><span id="status" class="status" role="status">连接中</span><button id="refresh" class="button">刷新</button><button id="var-session-open" class="button">更新 Var token</button><button id="reset" class="button" disabled>重置模拟</button></div></header>
   <div class="basis-note"><strong id="data-kind">模拟交易 · 等待行情</strong><span>公共成交队列模拟 Maker 成交 · US100 使用 Var token 鉴权指示性报价 · 收益未计资金费、隔夜费与股息调整</span></div>
   <div id="notice" class="notice" role="status" hidden></div><div id="reset-message" class="notice" role="status" hidden></div>

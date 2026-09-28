@@ -1,6 +1,7 @@
 """Private session handling and a deliberately narrow, non-executing API client."""
 import base64
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -135,7 +136,7 @@ class Client:
         except (OSError, ValueError, KeyError, TypeError):
             raise GridError("Cannot read session; run init-session first") from None
 
-    def request(self, method, path, *, query=None, body=None):
+    def request(self, method, path, *, query=None, body=None, with_observation=False):
         # This allowlist is enforced at the network sink, not only in CLI mode selection.
         if (method, path) not in {("GET", "/me"), ("GET", "/candles"), ("GET", "/metadata/supported_assets"), ("POST", "/quotes/indicative")}:
             raise GridError("Endpoint is not permitted by this paper-only client")
@@ -149,6 +150,7 @@ class Client:
             headers["Content-Type"] = "application/json"
             payload = json.dumps(body).encode()
         req = urllib.request.Request(url, data=payload, headers=headers, method=method)
+        requested = time.time()
         try:
             with self.opener.open(req, timeout=20) as response:
                 raw = response.read(2_000_001)
@@ -157,12 +159,27 @@ class Client:
                 data = json.loads(raw, parse_float=D)
                 if not isinstance(data, (dict, list)):
                     raise GridError("Unexpected API response type")
+                if with_observation:
+                    from email.utils import parsedate_to_datetime
+                    received = time.time()
+                    source = None
+                    date = response.headers.get("Date")
+                    if date:
+                        parsed = parsedate_to_datetime(date)
+                        if parsed.tzinfo is None:
+                            raise GridError("Invalid metadata source time")
+                        stamp = parsed.timestamp()
+                        age = float(response.headers.get("Age", "0"))
+                        if not math.isfinite(stamp) or not math.isfinite(age) or age < 0 or stamp > received + 2:
+                            raise GridError("Invalid metadata source time")
+                        source = min(stamp, requested - age)
+                    return data, received, source
                 return data
         except urllib.error.HTTPError as error:
             code = error.code
             error.close()
             raise GridError(f"API HTTP {code}; check session, service availability, or rate limit") from None
-        except (OSError, ValueError, UnicodeError):
+        except (OSError, ValueError, UnicodeError, OverflowError):
             raise GridError("API transport or JSON error; no simulated fills applied") from None
 
     def check_session(self):

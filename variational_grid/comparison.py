@@ -42,6 +42,9 @@ class Experiment:
             if isinstance(data, dict) and data.get("kind") == "inventory":
                 from .inventory_comparison import InventoryExperiment
                 return InventoryExperiment.load(path)
+            if isinstance(data, dict) and data.get("kind") == "cl_bz_scalper":
+                from .cl_bz_scalper import ScalperExperiment
+                return ScalperExperiment.from_data(path, data)
             if set(data) - {"base_config", "output_dir", "scenarios", "center_hours"} or not {"base_config", "output_dir", "scenarios"} <= set(data):
                 raise ValueError()
             base = configuration(path.parent / data["base_config"])
@@ -293,6 +296,9 @@ class Cohort:
 def run_comparison(args):
     from .cli import emit
     experiment = Experiment.load(args.experiments)
+    if getattr(experiment, "kind", None) == "cl_bz_scalper":
+        from .cl_bz_scalper import run_scalper
+        return run_scalper(args, experiment)
     if getattr(experiment, "kind", None) == "qqq_hedge":
         from .qqq_comparison import run_qqq
         return run_qqq(args, experiment)

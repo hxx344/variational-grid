@@ -24,7 +24,7 @@ class InstallTests(unittest.TestCase):
         self.source.mkdir()
         shutil.copytree(self.project / "variational_grid", self.source / "variational_grid", ignore=shutil.ignore_patterns("__pycache__"))
         for name in ("config.example.json", "experiments.example.json", "inventory.example.json",
-                     "qqq-hedge.example.json", "install.sh", "deploy_check.py", "pyproject.toml"):
+                     "qqq-hedge.example.json", "cl-bz-scalper.example.json", "install.sh", "deploy_check.py", "pyproject.toml"):
             shutil.copy(self.project / name, self.source / name)
         with (self.source / "deploy_check.py").open("a") as check:
             check.write("\nimport os\nwith Path(os.environ['GRID_INSTALL_TEST_VALIDATION_LOG']).open('a') as log: log.write('validated\\n')\n")
@@ -44,6 +44,7 @@ class InstallTests(unittest.TestCase):
         units.mkdir(parents=True)
         self.unit = units / "variational-grid.service"
         self.web_unit = units / "variational-grid-web.service"
+        self.cl_bz_unit = units / "variational-grid-cl-bz.service"
         installer = (self.project / "install.sh").read_text()
         for original, replacement in (
             ("/opt/variational-grid", self.app),
@@ -104,7 +105,8 @@ if name == "systemctl":
     if args[0] == "enable": row["enabled"] = True
     if args[0] == "restart":
         row["active"] = True
-        row["pid"] = 1001 if service == "variational-grid.service" else 1002
+        row["pid"] = {{"variational-grid.service": 1001, "variational-grid-web.service": 1002,
+                      "variational-grid-cl-bz.service": 1003}}[service]
         cwd = Path({str(self.proc)!r}) / str(row["pid"]) / "cwd"
         cwd.parent.mkdir(exist_ok=True)
         cwd.unlink(missing_ok=True)
@@ -259,6 +261,9 @@ if name == "runuser":
         self.assertIn(f'dashboard --experiments {self.conf}/qqq-hedge.json --port 9876', self.web_unit.read_text())
         self.assertFalse((self.conf / 'experiments.json').exists())
         self.assertFalse((self.conf / 'inventory.json').exists())
+        self.assertFalse((self.conf / 'cl-bz-scalper.json').exists())
+        self.assertFalse((self.conf / 'cl-bz-enabled').exists())
+        self.assertFalse(self.cl_bz_unit.exists())
         path = self.conf / 'qqq-hedge.json'
         spec = json.loads(path.read_text())
         self.assertEqual(spec['kind'], 'qqq_hedge')
@@ -287,6 +292,169 @@ if name == "runuser":
         self.assertNotIn(['systemctl', 'daemon-reload'], self.calls())
         self.assertFalse(any(c[0] == 'apt-get' or c[0] == 'git' and
                              any(arg in ('fetch', 'clone', 'archive') for arg in c[1:]) for c in self.calls()))
+
+    def test_cl_bz_explicit_fresh_install_has_three_separate_services(self):
+        self.install('--qqq-hedge', '--with-cl-bz')
+        self.assertEqual(self.restarts(), ['variational-grid.service', 'variational-grid-cl-bz.service', 'variational-grid-web.service'])
+        spec = json.loads((self.conf / 'cl-bz-scalper.json').read_text())
+        self.assertEqual(spec['kind'], 'cl_bz_scalper')
+        self.assertEqual(spec['base_config'], str(self.conf / 'config.json'))
+        self.assertEqual(spec['output_dir'], str(self.state / 'cl-bz-scalper-v1'))
+        self.assertEqual(spec['strategy']['quantity_barrels'], '1')
+        self.assertEqual(spec['strategy']['max_batches'], 30)
+        self.assertEqual(spec['strategy']['take_profit_percent'], '0.1')
+        self.assertEqual((self.conf / 'cl-bz-enabled').read_text().strip(), '1')
+        self.assertIn(f'compare --experiments {self.conf}/cl-bz-scalper.json', self.cl_bz_unit.read_text())
+        self.assertIn(f'dashboard --experiments {self.conf}/qqq-hedge.json --convergence-experiments {self.conf}/cl-bz-scalper.json --port 9876', self.web_unit.read_text())
+        self.assertIn('ProtectSystem=strict', self.cl_bz_unit.read_text())
+        state = json.loads(self.service_state.read_text())
+        self.assertEqual({state[name]['pid'] for name in self.restarts()}, {1001, 1002, 1003})
+
+    def test_cl_bz_opt_in_preserves_qqq_and_repeat_is_incremental(self):
+        self.install()
+        paths = [self.conf / 'config.json', self.conf / 'qqq-hedge.json', self.unit]
+        original = {path: path.read_bytes() for path in paths}
+        qqq_output = Path(json.loads(original[self.conf / 'qqq-hedge.json'])['output_dir'])
+        qqq_output.mkdir()
+        ledger = qqq_output / 'ledger.sqlite3'
+        ledger.write_bytes(b'preserved QQQ positions and statistics')
+        self.log.write_text('')
+        self.install('--with-cl-bz')
+        self.assertEqual(self.restarts(), ['variational-grid-cl-bz.service', 'variational-grid-web.service'])
+        self.assertEqual({path: path.read_bytes() for path in paths}, original)
+        self.assertEqual(ledger.read_bytes(), b'preserved QQQ positions and statistics')
+        config = (self.conf / 'cl-bz-scalper.json').read_bytes()
+        validated = self.validation_log.read_bytes()
+        self.log.write_text('')
+        result = self.install()
+        self.assertIn('CL/BZ companion: enabled', result.stdout)
+        self.assertEqual(self.restarts(), [])
+        self.assertNotIn(['systemctl', 'daemon-reload'], self.calls())
+        self.assertFalse(any(c[0] == 'apt-get' or c[0] == 'git' and
+                             any(arg in ('fetch', 'clone', 'archive') for arg in c[1:]) for c in self.calls()))
+        self.assertEqual(self.validation_log.read_bytes(), validated)
+        self.assertEqual((self.conf / 'cl-bz-scalper.json').read_bytes(), config)
+        self.assertEqual({path: path.read_bytes() for path in paths}, original)
+
+    def test_cl_bz_settings_restart_only_companion_and_web(self):
+        self.install('--with-cl-bz')
+        path = self.conf / 'cl-bz-scalper.json'
+        spec = json.loads(path.read_text())
+        spec['output_dir'] = str(self.state / 'custom-cl-bz-scalper-run')
+        spec['strategy']['take_profit_percent'] = '0.15'
+        path.write_text(json.dumps(spec))
+        self.log.write_text('')
+        self.install()
+        self.assertEqual(self.restarts(), ['variational-grid-cl-bz.service', 'variational-grid-web.service'])
+        preserved, validated = path.read_bytes(), self.validation_log.read_bytes()
+        with (self.source / 'cl-bz-scalper.example.json').open('a') as stream:
+            stream.write('\n')
+        self.commit()
+        self.log.write_text('')
+        self.install()
+        self.assertEqual(self.restarts(), [])
+        self.assertNotEqual(self.validation_log.read_bytes(), validated)
+        self.assertEqual(path.read_bytes(), preserved)
+
+    def test_cl_bz_modes_pause_and_restore_saved_companion(self):
+        self.install('--with-cl-bz')
+        path = self.conf / 'cl-bz-scalper.json'
+        original = path.read_bytes()
+        output = Path(json.loads(original)['output_dir'])
+        output.mkdir()
+        ledger = output / 'ledger.sqlite3'
+        ledger.write_bytes(b'preserved independent CL/BZ positions')
+        for mode in ('--inventory', '--compare', '--single'):
+            with self.subTest(mode=mode):
+                self.log.write_text('')
+                self.install(mode)
+                self.assertIn(['systemctl', 'disable', '--now', 'variational-grid-cl-bz.service'], self.calls())
+                self.assertNotIn('variational-grid-cl-bz.service', self.restarts())
+                self.assertEqual((self.conf / 'cl-bz-enabled').read_text().strip(), '1')
+                state = json.loads(self.service_state.read_text())['variational-grid-cl-bz.service']
+                self.assertFalse(state['enabled'] or state['active'])
+                self.log.write_text('')
+                self.install()
+                self.assertEqual(self.restarts(), [])
+                self.install('--qqq-hedge')
+                self.assertIn('variational-grid-cl-bz.service', self.restarts())
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(ledger.read_bytes(), b'preserved independent CL/BZ positions')
+
+    def test_cl_bz_opt_in_in_historical_mode_waits_for_qqq(self):
+        self.install('--inventory', '--with-cl-bz')
+        self.assertEqual((self.conf / 'cl-bz-enabled').read_text().strip(), '1')
+        self.assertFalse(self.cl_bz_unit.exists())
+        self.assertFalse((self.conf / 'cl-bz-scalper.json').exists())
+        self.log.write_text('')
+        self.install('--qqq-hedge')
+        self.assertIn('variational-grid-cl-bz.service', self.restarts())
+
+    def test_cl_bz_invalid_paths_and_kind_leave_running_services_unchanged(self):
+        self.install('--with-cl-bz')
+        path = self.conf / 'cl-bz-scalper.json'
+        original = json.loads(path.read_text())
+        qqq_output = Path(json.loads((self.conf / 'qqq-hedge.json').read_text())['output_dir'])
+        legacy_output = self.state / 'historical-comparison'
+        (self.conf / 'experiments.json').write_text(json.dumps({'output_dir': str(legacy_output)}))
+        invalid = [
+            {'kind': 'inventory'}, {'base_config': 'qqq-hedge.json'},
+            {'output_dir': str(self.root / 'outside')}, {'output_dir': str(self.state)},
+            {'output_dir': str(qqq_output)}, {'output_dir': str(qqq_output / 'nested')},
+            {'output_dir': str(legacy_output)}, {'output_dir': str(legacy_output / 'nested')},
+            {'output_dir': str(self.state / 'session.json/nested')},
+        ]
+        alias = self.state / 'qqq-alias'
+        qqq_output.mkdir()
+        alias.symlink_to(qqq_output, target_is_directory=True)
+        invalid.append({'output_dir': str(alias)})
+        current = (self.app / 'current').resolve()
+        for changes in invalid:
+            with self.subTest(changes=changes):
+                path.write_text(json.dumps({**original, **changes}))
+                self.log.write_text('')
+                self.install(expected=1)
+                self.assertEqual(self.restarts(), [])
+                self.assertEqual((self.app / 'current').resolve(), current)
+        path.write_text(json.dumps(original))
+
+    def test_cl_bz_reload_failure_retries_companion_before_marking_applied(self):
+        self.install()
+        self.log.write_text('')
+        self.env['GRID_INSTALL_TEST_FAIL_RELOAD'] = '1'
+        self.install('--with-cl-bz', expected=1)
+        self.assertEqual(self.restarts(), [])
+        self.assertEqual((self.app / 'applied-cl-bz').read_text(), '')
+        self.env.pop('GRID_INSTALL_TEST_FAIL_RELOAD')
+        self.log.write_text('')
+        self.install()
+        self.assertEqual(self.restarts(), ['variational-grid-cl-bz.service', 'variational-grid-web.service'])
+        self.assertIn(['systemctl', 'daemon-reload'], self.calls())
+
+    def test_cl_bz_cleanup_preserves_all_three_running_releases(self):
+        self.install('--with-cl-bz')
+        main_revision = self.revision
+        (self.source / 'README.md').write_text('Companion release')
+        cl_bz_revision = self.commit()
+        path = self.conf / 'cl-bz-scalper.json'
+        spec = json.loads(path.read_text())
+        spec['output_dir'] = str(self.state / 'second-cl-bz-scalper-run')
+        path.write_text(json.dumps(spec))
+        self.install()
+        with (self.source / 'variational_grid/web/styles.css').open('a') as stream:
+            stream.write('\n/* next dashboard */\n')
+        web_revision = self.commit()
+        self.install()
+        docs_revisions = []
+        for index in range(2):
+            (self.source / 'README.md').write_text(f'Docs revision {index}')
+            docs_revisions.append(self.commit())
+            self.install()
+        self.log.write_text('')
+        self.install('--cleanup')
+        self.assertEqual(self.restarts(), [])
+        self.assertEqual({item.name for item in (self.app / 'releases').iterdir()},
+                         {main_revision, cl_bz_revision, web_revision, *docs_revisions})
 
     def test_qqq_default_nine_upgrade_starts_three_without_rewriting_history(self):
         from test_qqq_migration import legacy_spec

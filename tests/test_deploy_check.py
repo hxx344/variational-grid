@@ -1,5 +1,6 @@
 """Exercise the actual offline deployment preflight with native Python."""
 import os
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,7 +18,7 @@ class DeployCheckTests(unittest.TestCase):
         project = Path(__file__).resolve().parents[1]
         shutil.copytree(project / "variational_grid", self.root / "variational_grid", ignore=shutil.ignore_patterns("__pycache__"))
         for name in ("deploy_check.py", "pyproject.toml", "config.example.json", "experiments.example.json",
-                     "inventory.example.json", "qqq-hedge.example.json"):
+                     "inventory.example.json", "qqq-hedge.example.json", "cl-bz-scalper.example.json"):
             shutil.copyfile(project / name, self.root / name)
 
     def check(self, expected=0):
@@ -63,6 +64,22 @@ class DeployCheckTests(unittest.TestCase):
     def test_missing_dashboard_asset_is_rejected(self):
         (self.root / "variational_grid/web/qqq.js").unlink()
         self.assertIn("FileNotFoundError", self.check(expected=1).stderr)
+
+    def test_missing_cl_bz_scalper_example_is_rejected(self):
+        (self.root / "cl-bz-scalper.example.json").unlink()
+        self.assertIn("FileNotFoundError", self.check(expected=1).stderr)
+
+    def test_cl_bz_scalper_example_kind_is_checked(self):
+        path = self.root / "cl-bz-scalper.example.json"
+        path.write_text(path.read_text().replace('"cl_bz_scalper"', '"inventory"'))
+        self.assertIn("CL/BZ example requires kind=cl_bz_scalper", self.check(expected=1).stderr)
+
+    def test_cl_bz_scalper_example_uses_real_semantic_validation(self):
+        path = self.root / "cl-bz-scalper.example.json"
+        spec = json.loads(path.read_text())
+        spec['strategy']['quantity_barrels'] = '-1'
+        path.write_text(json.dumps(spec))
+        self.check(expected=1)
 
 
 if __name__ == "__main__":

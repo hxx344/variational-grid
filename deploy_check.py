@@ -1,6 +1,7 @@
 """Fast offline release preflight. Full regression tests belong in CI."""
 from contextlib import closing
 import importlib
+import json
 from pathlib import Path
 import shutil
 import sqlite3
@@ -37,15 +38,18 @@ def main():
     # Load examples with the real parsers, without touching user config or ledgers.
     with tempfile.TemporaryDirectory(prefix="grid-preflight-") as directory:
         examples = Path(directory)
-        for name in ("config.example.json", "experiments.example.json", "inventory.example.json", "qqq-hedge.example.json"):
+        for name in ("config.example.json", "experiments.example.json", "inventory.example.json", "qqq-hedge.example.json", "cl-bz-scalper.example.json"):
             shutil.copyfile(root / name, examples / name)
         shutil.copyfile(examples / "config.example.json", examples / "config.local.json")
         configuration(examples / "config.example.json")
-        for name in ("experiments.example.json", "inventory.example.json", "qqq-hedge.example.json"):
+        if json.loads((examples / "cl-bz-scalper.example.json").read_text(encoding="utf-8"))["kind"] != "cl_bz_scalper":
+            raise RuntimeError("CL/BZ example requires kind=cl_bz_scalper")
+        for name in ("experiments.example.json", "inventory.example.json", "qqq-hedge.example.json", "cl-bz-scalper.example.json"):
             Experiment.load(examples / name)
 
     for name in ("index.html", "app.js", "model.js", "styles.css", "inventory.html", "inventory.js", "inventory.css",
-                 "qqq.html", "qqq.js", "qqq.css", "var-session.js", "hub.js"):
+                 "qqq.html", "qqq.js", "qqq.css", "var-session.js", "hub.js",
+                 "convergence.html", "convergence.js", "convergence.css", "strategies.js"):
         if not (root / "variational_grid/web" / name).read_text(encoding="utf-8").strip():
             raise RuntimeError(f"Empty dashboard asset: {name}")
     with closing(sqlite3.connect(":memory:")) as db:

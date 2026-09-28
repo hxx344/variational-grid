@@ -145,6 +145,9 @@ def reset_comparison(args):
     if getattr(experiment, "kind", None) == "inventory":
         from .inventory_comparison import InventoryCohort
         Cohort = InventoryCohort
+    if getattr(experiment, "kind", None) == "cl_bz_scalper":
+        from .cl_bz_scalper import ScalperCohort
+        Cohort = ScalperCohort
     state = read_state(experiment)
     if state is None:
         raise GridError("No initialized simulation to reset")

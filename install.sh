@@ -3,21 +3,25 @@
 set -euo pipefail
 umask 077
 requested_mode=
+requested_cl_bz=0
 cleanup_only=0
 usage() {
   cat <<'HELP'
-Usage: install.sh [--compare|--inventory|--qqq-hedge|--single|--cleanup|--help]
+Usage: install.sh [--compare|--inventory|--qqq-hedge|--single] [--with-cl-bz]
+       install.sh [--cleanup|--help]
 Debian 12+ / Ubuntu 24.04+, with systemd and Python 3.11+.
 New installs run Lighter QQQ / Variational US100 paper scalping by default.
 Three independent take-profit settings: 0.05% / 0.1% / 0.2%.
 Includes a localhost dashboard on port 9876, accessed over SSH.
 Repeating the command upgrades code and preserves mode, settings and data.
-QQQ and historical CL/BZ modes share one strategy service, never parallel services.
+Historical modes share the main strategy service. QQQ can also run a separate CL scalper with a BZ short hedge.
 Deployments use a cached offline preflight; full regression tests run in CI.
 Unchanged dependencies, validated code and running services are reused.
   --compare  Explicitly select the historical CL/BZ three-grid comparison.
   --inventory  Explicitly select the historical CL/BZ inventory comparison.
   --qqq-hedge  Start the three-scenario Lighter QQQ / Variational US100 paper comparison.
+  --with-cl-bz  Opt in to one CL paper scalper with an equal-barrel BZ short hedge alongside QQQ.
+                Saved across upgrades; paused in historical modes, with settings and data retained.
   --single   Explicitly select the historical CL/BZ single grid using config.json.
   --cleanup  Reclaim obsolete deployments without downloading or restarting.
   --help     Show this help without installing anything.
@@ -25,19 +29,18 @@ All modes reuse a saved vr-token or ask for hidden input; Lighter data stays pub
 No wallet key is needed.
 HELP
 }
-if [[ $# -gt 1 ]]; then
-  usage >&2; exit 1
-fi
-case ${1:-} in
-  --compare) requested_mode=compare ;;
-  --inventory) requested_mode=inventory ;;
-  --qqq-hedge) requested_mode=qqq-hedge ;;
-  --single) requested_mode=run ;;
-  --cleanup) cleanup_only=1 ;;
-  --help|-h) usage; exit 0 ;;
-  '') ;;
-  *) usage >&2; exit 1 ;;
-esac
+for argument in "$@"; do
+  case $argument in
+    --compare|--inventory|--qqq-hedge|--single)
+      [[ -z $requested_mode ]] || { usage >&2; exit 1; }
+      requested_mode=${argument#--}
+      [[ $requested_mode != single ]] || requested_mode=run ;;
+    --with-cl-bz) requested_cl_bz=1 ;;
+    --cleanup) [[ $# == 1 ]] || { usage >&2; exit 1; }; cleanup_only=1 ;;
+    --help|-h) [[ $# == 1 ]] || { usage >&2; exit 1; }; usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
 
 # Kept inside the downloaded installer so cleanup runs before fetching any code.
 # This helper uses only Python's standard library and never imports application code.
@@ -68,7 +71,7 @@ class DeploymentStorage:
             self.protect(installer_source)
         # Preserve any configured path, including symlinks to a release. Config is
         # parsed as data; neither credentials nor configuration values are printed.
-        for name in ('config.json', 'inventory-base.json', 'experiments.json', 'inventory.json', 'qqq-hedge.json'):
+        for name in ('config.json', 'inventory-base.json', 'experiments.json', 'inventory.json', 'qqq-hedge.json', 'cl-bz-scalper.json'):
             path = self.conf / name
             self.protect(path)
             if not path.exists():
@@ -76,7 +79,7 @@ class DeploymentStorage:
             spec = json.loads(path.read_text())
             if not isinstance(spec, dict):
                 raise ValueError('Expected configuration object')
-            for key in ('session_file', 'state_file', 'output_dir', 'base_config'):
+            for key in ('session_file', 'state_file', 'output_dir', 'previous_output_dir', 'base_config'):
                 value = spec.get(key)
                 if isinstance(value, str) and value:
                     configured = Path(value)
@@ -92,7 +95,7 @@ class DeploymentStorage:
         self.roots.extend((path, path.resolve()))
 
     def inspect_services(self):
-        for service in ('variational-grid.service', 'variational-grid-web.service'):
+        for service in ('variational-grid.service', 'variational-grid-web.service', 'variational-grid-cl-bz.service'):
             result = subprocess.run(['systemctl', 'show', '--property=MainPID',
                                      '--property=LoadState', service], text=True, capture_output=True)
             props = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
@@ -177,7 +180,7 @@ class DeploymentStorage:
         # retained legacy release so a no-op upgrade still reuses validation.
         result = subprocess.run(['git', '-C', str(self.source), 'ls-tree', '-r', release.name, '--',
                                  'variational_grid', 'tests', 'install.sh', 'config.example.json',
-                                 'experiments.example.json', 'inventory.example.json', 'qqq-hedge.example.json',
+                                 'experiments.example.json', 'inventory.example.json', 'qqq-hedge.example.json', 'cl-bz-scalper.example.json',
                                  'pyproject.toml'], capture_output=True)
         if result.returncode:
             return None
@@ -293,7 +296,7 @@ cleanup() {
   trap - EXIT INT TERM
   [[ $status == 0 ]] || candidate=$new_release
   if [[ -n $staging || -n $deployment || -n $candidate ]]; then
-    # Refresh both process directories before deleting a failed candidate.
+    # Refresh all process directories before deleting a failed candidate.
     # Failed inspection retains it; configuration and active code take priority.
     storage abandon "$staging" "$deployment" "$candidate" || true
   fi
@@ -335,6 +338,11 @@ python3 -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ requir
 
 mode=${requested_mode:-$(cat "$conf/mode" 2>/dev/null || echo qqq-hedge)}
 [[ $mode == run || $mode == compare || $mode == inventory || $mode == qqq-hedge ]] || { echo 'Invalid saved service mode.' >&2; exit 1; }
+cl_bz_enabled=$(cat "$conf/cl-bz-enabled" 2>/dev/null || echo 0)
+[[ $cl_bz_enabled == 0 || $cl_bz_enabled == 1 ]] || { echo 'Invalid saved CL/BZ preference.' >&2; exit 1; }
+if (( requested_cl_bz )); then cl_bz_enabled=1; fi
+cl_bz_active=0
+if [[ $mode == qqq-hedge && $cl_bz_enabled == 1 ]]; then cl_bz_active=1; fi
 experiment_name=experiments.json
 config_name=config.json
 if [[ $mode == inventory ]]; then
@@ -382,7 +390,7 @@ release="$app/releases/$revision"
 validation_key=$({
   printf '%s\n' 'quick-preflight-v1'
   python3 -c 'import sys, sqlite3; print(sys.version, sys.implementation.name, sys.implementation.cache_tag, sys.executable, sqlite3.sqlite_version)'
-  git -C "$app/source" ls-tree -r "$revision" -- variational_grid deploy_check.py install.sh config.example.json experiments.example.json inventory.example.json qqq-hedge.example.json pyproject.toml
+  git -C "$app/source" ls-tree -r "$revision" -- variational_grid deploy_check.py install.sh config.example.json experiments.example.json inventory.example.json qqq-hedge.example.json cl-bz-scalper.example.json pyproject.toml
 } | sha256sum | cut -d ' ' -f1)
 install -d -m 755 "$app/validated"
 validate_release() {
@@ -457,8 +465,20 @@ Path(sys.argv[2]).write_text(json.dumps(data, indent=2) + '\n')
 PY
   chmod 644 "$conf/qqq-hedge.json"
 fi
+if (( cl_bz_active )) && [[ ! -f "$conf/cl-bz-scalper.json" ]]; then
+  python3 - "$release/cl-bz-scalper.example.json" "$conf/cl-bz-scalper.json" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text())
+data['base_config'] = '/etc/variational-grid/config.json'
+data['output_dir'] = '/var/lib/variational-grid/cl-bz-scalper-v1'
+Path(sys.argv[2]).write_text(json.dumps(data, indent=2) + '\n')
+PY
+  chmod 644 "$conf/cl-bz-scalper.json"
+fi
 # Validate preserved config before switching the running version.
-(cd "$release" && python3 - "$mode" <<'PY'
+validate_settings() {
+  (cd "$release" && python3 - "$mode" "$cl_bz_active" <<'PY'
 import json, sys
 from dataclasses import replace
 from pathlib import Path
@@ -491,8 +511,32 @@ for value in ((config.session_file,) if sys.argv[1] == 'qqq-hedge' else (config.
     path = Path(value).resolve()
     if path == root or not path.is_relative_to(root):
         raise SystemExit('Service session_file and state_file must stay inside /var/lib/variational-grid')
+if sys.argv[2] == '1':
+    path = Path('/etc/variational-grid/cl-bz-scalper.json')
+    spec = json.loads(path.read_text())
+    if spec.get('kind') != 'cl_bz_scalper':
+        raise SystemExit('CL/BZ companion requires kind=cl_bz_scalper')
+    if (path.parent / spec['base_config']).resolve() != base_path.resolve():
+        raise SystemExit(f'CL/BZ companion must use {base_path}')
+    companion = Experiment.load(path)
+    output = companion.output.resolve()
+    if output == root or not output.is_relative_to(root):
+        raise SystemExit('CL/BZ companion output must stay inside /var/lib/variational-grid')
+    # Never share any active or saved simulation tree, including historical ledgers.
+    protected = [Path(config.session_file).resolve(), Path(config.state_file).resolve()]
+    for name in ('qqq-hedge.json', 'experiments.json', 'inventory.json', 'inventory-base.json'):
+        other_path = path.parent / name
+        if other_path.exists():
+            other = json.loads(other_path.read_text())
+            for key in ('output_dir', 'previous_output_dir', 'session_file', 'state_file'):
+                if other.get(key):
+                    protected.append((other_path.parent / other[key]).resolve())
+    if any(output == other or output in other.parents or other in output.parents for other in protected):
+        raise SystemExit('CL/BZ companion output must be separate from all saved simulation, session and ledger paths')
 PY
-)
+  )
+}
+validate_settings
 if [[ $mode == qqq-hedge ]]; then
   (cd "$release" && python3 - <<'PY'
 from variational_grid.qqq_migration import upgrade_qqq_defaults
@@ -503,6 +547,8 @@ else:
     print('QQQ settings unchanged; skipping migration.')
 PY
   )
+  # A legacy QQQ migration can select a new output directory; validate the final pair.
+  if (( cl_bz_active )); then validate_settings; fi
   echo 'QQQ public feed / US100 vr-token authenticated paper pricing selected; existing simulation ledgers are preserved.'
 fi
 if ! (cd "$release" && runuser -u "$account" -- python3 -m variational_grid check-session --config "$conf/$config_name"); then
@@ -576,8 +622,19 @@ engine_key=$({
   python3 --version
   git -C "$app/source" ls-tree -r "$revision" -- variational_grid | sed '\|[[:space:]]variational_grid/web/|d; \|[[:space:]]variational_grid/dashboard.py$|d; \|[[:space:]]variational_grid/hub.py$|d'
 } | sha256sum | cut -d ' ' -f1)
+cl_bz_settings_key=
+cl_bz_engine_key=
+if (( cl_bz_active )); then
+  cl_bz_settings_key=$(sha256sum "$conf/config.json" "$conf/cl-bz-scalper.json" | sha256sum | cut -d ' ' -f1)
+  cl_bz_engine_key=$({
+    printf '%s\n' "$cl_bz_settings_key"
+    python3 --version
+    git -C "$app/source" ls-tree -r "$revision" -- variational_grid | sed '\|[[:space:]]variational_grid/web/|d; \|[[:space:]]variational_grid/dashboard.py$|d; \|[[:space:]]variational_grid/hub.py$|d'
+  } | sha256sum | cut -d ' ' -f1)
+fi
 web_key=$({
   printf '%s\n' "$settings_key"
+  if (( cl_bz_active )); then printf '%s\n' "$cl_bz_settings_key"; fi
   python3 --version
   git -C "$app/source" ls-tree -r "$revision" -- variational_grid
 } | sha256sum | cut -d ' ' -f1)
@@ -613,6 +670,12 @@ UNIT
 sed -i "s|^Description=.*|Description=$service_description|" "$deployment/variational-grid.service"
 if [[ $mode != run ]]; then
   sed -i "s|^ExecStart=.*|ExecStart=/usr/bin/python3 -m variational_grid compare --experiments $conf/$experiment_name|" "$deployment/variational-grid.service"
+  convergence_arguments=
+  if (( cl_bz_active )); then
+    convergence_arguments=" --convergence-experiments $conf/cl-bz-scalper.json"
+    cp "$deployment/variational-grid.service" "$deployment/variational-grid-cl-bz.service"
+    sed -i "s|^Description=.*|Description=Variational CL paper scalper / BZ short hedge|; s|^ExecStart=.*|ExecStart=/usr/bin/python3 -m variational_grid compare --experiments $conf/cl-bz-scalper.json|" "$deployment/variational-grid-cl-bz.service"
+  fi
   cat >"$deployment/variational-grid-web.service" <<UNIT
 [Unit]
 Description=$service_description dashboard (localhost)
@@ -623,7 +686,7 @@ Type=simple
 User=variational-grid
 Group=variational-grid
 WorkingDirectory=/opt/variational-grid/current
-ExecStart=/usr/bin/python3 -m variational_grid dashboard --experiments $conf/$experiment_name --port 9876
+ExecStart=/usr/bin/python3 -m variational_grid dashboard --experiments $conf/$experiment_name$convergence_arguments --port 9876
 Restart=on-failure
 RestartSec=10
 UMask=0077
@@ -645,6 +708,11 @@ elif [[ -f /etc/systemd/system/variational-grid-web.service ]]; then
     systemctl disable --now variational-grid-web.service
   fi
 fi
+if (( ! cl_bz_active )) && [[ -f /etc/systemd/system/variational-grid-cl-bz.service ]]; then
+  if systemctl is-active --quiet variational-grid-cl-bz.service || systemctl is-enabled --quiet variational-grid-cl-bz.service; then
+    systemctl disable --now variational-grid-cl-bz.service
+  fi
+fi
 if [[ $(readlink -f "$app/current" 2>/dev/null || true) != "$release" ]]; then
   ln -sfn "$release" "$app/current"
 fi
@@ -652,22 +720,31 @@ if [[ $(cat "$conf/mode" 2>/dev/null || true) != "$mode" ]]; then
   printf '%s\n' "$mode" >"$conf/mode"
   chmod 644 "$conf/mode"
 fi
+if [[ $cl_bz_enabled == 1 && $(cat "$conf/cl-bz-enabled" 2>/dev/null || true) != 1 ]]; then
+  printf '1\n' >"$conf/cl-bz-enabled"
+  chmod 644 "$conf/cl-bz-enabled"
+fi
 units_changed=false
 engine_unit_changed=false
 web_unit_changed=false
-for service in variational-grid.service variational-grid-web.service; do
+cl_bz_unit_changed=false
+for service in variational-grid.service variational-grid-web.service variational-grid-cl-bz.service; do
   if [[ -f "$deployment/$service" ]] && ! cmp -s "$deployment/$service" "/etc/systemd/system/$service"; then
     # Invalidate before writing so an interrupted reload/restart is retried.
     : >"$app/applied-units"
-    if [[ $service == variational-grid.service ]]; then : >"$app/applied-engine"; else : >"$app/applied-web"; fi
+    case $service in
+      variational-grid.service) : >"$app/applied-engine"; engine_unit_changed=true ;;
+      variational-grid-web.service) : >"$app/applied-web"; web_unit_changed=true ;;
+      variational-grid-cl-bz.service) : >"$app/applied-cl-bz"; cl_bz_unit_changed=true ;;
+    esac
     install -m 644 "$deployment/$service" "/etc/systemd/system/$service"
     units_changed=true
-    if [[ $service == variational-grid.service ]]; then engine_unit_changed=true; else web_unit_changed=true; fi
   fi
 done
 units_key=$({
   sha256sum /etc/systemd/system/variational-grid.service
   if [[ -f /etc/systemd/system/variational-grid-web.service ]]; then sha256sum /etc/systemd/system/variational-grid-web.service; fi
+  if [[ -f /etc/systemd/system/variational-grid-cl-bz.service ]]; then sha256sum /etc/systemd/system/variational-grid-cl-bz.service; fi
 } | sha256sum | cut -d ' ' -f1)
 if $units_changed || [[ $(cat "$app/applied-units" 2>/dev/null || true) != "$units_key" ]]; then
   systemctl daemon-reload
@@ -685,6 +762,9 @@ apply_service() {
   fi
 }
 apply_service variational-grid.service "$engine_key" "$engine_unit_changed" "$app/applied-engine"
+if (( cl_bz_active )); then
+  apply_service variational-grid-cl-bz.service "$cl_bz_engine_key" "$cl_bz_unit_changed" "$app/applied-cl-bz"
+fi
 if [[ $mode != run ]]; then
   apply_service variational-grid-web.service "$web_key" "$web_unit_changed" "$app/applied-web"
 fi
@@ -693,7 +773,15 @@ storage prune "$old_current"
 
 echo 'Paper simulation ready. Settings and ledger are preserved on repeat installation.'
 printf 'Service mode: %s\n' "$mode"
-printf 'Strategy: %s (one strategy service)\n' "$service_description"
+printf 'Strategy: %s\n' "$service_description"
+if (( cl_bz_active )); then
+  printf 'CL/BZ companion: enabled; separate settings %s/cl-bz-scalper.json and preserved ledger.\n' "$conf"
+  echo 'CL/BZ logs: journalctl -u variational-grid-cl-bz -f'
+elif [[ $cl_bz_enabled == 1 ]]; then
+  echo 'CL/BZ companion: paused in this mode; saved preference, settings and data preserved.'
+else
+  echo 'CL/BZ companion: not enabled; add --with-cl-bz alongside QQQ to opt in.'
+fi
 printf 'Settings: %s/%s\n' "$conf" "$config_name"
 if [[ $mode != run ]]; then
   printf 'Experiments: %s/%s\n' "$conf" "$experiment_name"

@@ -47,7 +47,8 @@ def read_summary(experiment, now=None):
         raise ValueError("Invalid published sample")
 
     modes = {"paper_comparison": "CL/BZ 价差网格",
-             "inventory_comparison": "CL/BZ 库存组合", "qqq_hedge_comparison": "QQQ / US100 对冲"}
+             "inventory_comparison": "CL/BZ 库存组合", "qqq_hedge_comparison": "QQQ / US100 对冲",
+             "cl_bz_scalper": "CL 多头剥头皮 / BZ 空头对冲"}
     mode = sample.get("mode")
     scenarios = sample.get("scenarios", [])
     if not isinstance(scenarios, list) or any(not isinstance(row, dict) for row in scenarios):
@@ -93,6 +94,15 @@ def read_summary(experiment, now=None):
             elif timestamp is not None:
                 timestamp = min(timestamp, source_time)
         incomplete |= bool(market.get("gap")) or market.get("source_status") != "ready"
+    if mode == "cl_bz_scalper":
+        market = sample.get("market") or {}
+        for key in ("cl_source_ts", "bz_source_ts"):
+            source_time = number(market.get(key))
+            if source_time is None or not 0 < source_time <= now + 60:
+                valid_time, incomplete = False, True
+            elif timestamp is not None:
+                timestamp = min(timestamp, source_time)
+        incomplete |= market.get("source_status") != "ready"
     if valid_time:
         data["updatedAt"] = utc(timestamp)
     status = runtime.get("status")
@@ -109,3 +119,21 @@ def read_summary(experiment, now=None):
     if synthetic:
         health["message"] = "合成行情演示 · " + health["message"]
     return result
+
+
+def read_combined_summary(primary, convergence, now=None):
+    """Keep independent PnLs and source times; never add paper accounts as assets."""
+    first, second = read_summary(primary, now), read_summary(convergence, now)
+    data, other = first["data"], second["data"]
+    primary_time = data["updatedAt"]
+    data["metrics"].append({"key": "qqq_sample_time", "label": "QQQ / US100 来源时间", "value": primary_time})
+    data["metrics"] += [{**row, "key": "cl_bz_" + row["key"], "label": "CL/BZ · " + row["label"]} for row in other["metrics"]]
+    data["metrics"].append({"key": "cl_bz_sample_time", "label": "CL/BZ 来源时间", "value": other["updatedAt"]})
+    times = [primary_time, other["updatedAt"]]
+    data["updatedAt"] = min(times) if all(times) else None
+    severity = {"online": 0, "partial": 1, "stale": 2, "offline": 3}
+    a, b = data["health"], other["health"]
+    a["state"] = max((a["state"], b["state"]), key=lambda value: severity[value])
+    a["staleAfterSeconds"] = min(a["staleAfterSeconds"], b["staleAfterSeconds"])
+    a["message"] = "QQQ / US100：" + a["message"] + "；CL/BZ：" + b["message"]
+    return first

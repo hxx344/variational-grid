@@ -1,0 +1,22 @@
+{
+  "kind": "cl_bz_scalper",
+  "base_config": "config.example.json",
+  "output_dir": "data/cl-bz-scalper-v1",
+  "strategy": {
+    "quantity_barrels": "1",
+    "max_batches": 30,
+    "take_profit_percent": "0.1",
+    "wait_seconds": 450,
+    "reprice_after_seconds": 20,
+    "reprice_poll_seconds": 5,
+    "initial_balance_usdc": "1000",
+    "paper_leverage": "5",
+    "max_margin_fraction": "0.80",
+    "max_drawdown_fraction": "0.20",
+    "fee_bps": "0",
+    "slippage_bps": "1",
+    "poll_seconds": 10,
+    "max_quote_age_seconds": 15,
+    "max_pair_skew_seconds": 5
+  }
+}

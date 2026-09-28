@@ -216,7 +216,7 @@ def _read_dashboard(experiment, window):
     return result
 
 
-def make_server(experiment, port=9876):
+def make_server(experiment, port=9876, convergence=None):
     assets = Path(__file__).with_name("web")
     routes = dict(ASSETS)
     if getattr(experiment, "kind", None) == "inventory":
@@ -229,7 +229,15 @@ def make_server(experiment, port=9876):
         routes["/qqq.css"] = ("qqq.css", "text/css; charset=utf-8")
         routes["/var-session.js"] = ("var-session.js", "text/javascript; charset=utf-8")
     routes["/index.html"] = routes["/"]
+    routes["/strategies.js"] = ("strategies.js", "text/javascript; charset=utf-8")
+    if convergence is not None:
+        from .cl_bz_scalper import validate_companion
+        validate_companion(experiment, convergence)
+        routes.update({"/cl-bz": ("convergence.html", "text/html; charset=utf-8"),
+                       "/convergence.js": ("convergence.js", "text/javascript; charset=utf-8"),
+                       "/convergence.css": ("convergence.css", "text/css; charset=utf-8")})
     reset_token = secrets.token_urlsafe(32)
+    convergence_reset_token = secrets.token_urlsafe(32)
     session_token = secrets.token_urlsafe(32)
     session_control = VarSessionControl(experiment)
 
@@ -272,11 +280,18 @@ def make_server(experiment, port=9876):
                 if parsed.path in routes:
                     filename, mime = routes[parsed.path]
                     return self.reply(200, (assets / filename).read_bytes(), mime, head)
+                if parsed.path == "/api/strategies" and not parsed.query:
+                    labels = {"qqq_hedge": "QQQ / US100", "inventory": "CL / BZ 库存组合"}
+                    strategies = [{"id": "primary", "label": labels.get(getattr(experiment, "kind", None), "CL / BZ 网格"), "url": "/"}]
+                    if convergence is not None:
+                        strategies.append({"id": "cl-bz", "label": "CL 剥头皮 / BZ 对冲", "url": "/cl-bz"})
+                    return self.reply(200, json.dumps({"strategies": strategies}, ensure_ascii=False).encode(), "application/json", head)
                 if parsed.path == "/api/hub/summary":
                     if parsed.query not in {"", "schemaVersion=2"}:
                         return self.reply(400, b"Unsupported summary version", head=head)
-                    from .hub import read_summary
-                    payload = json.dumps(read_summary(experiment), ensure_ascii=False, allow_nan=False).encode()
+                    from .hub import read_summary, read_combined_summary
+                    data = read_summary(experiment) if convergence is None else read_combined_summary(experiment, convergence)
+                    payload = json.dumps(data, ensure_ascii=False, allow_nan=False).encode()
                     return self.reply(200, payload, "application/json; charset=utf-8", head)
                 if parsed.path == "/api/dashboard":
                     query = parse_qs(parsed.query)
@@ -311,6 +326,27 @@ def make_server(experiment, port=9876):
                             return self.reply(400, b"Invalid history timestamp", head=head)
                         data = read_qqq_history(experiment, window, through)
                     return self.reply(200, json.dumps(data, ensure_ascii=False).encode(), "application/json; charset=utf-8", head)
+                if convergence is not None and parsed.path in {"/api/cl-bz-snapshot", "/api/cl-bz-history"}:
+                    from .cl_bz_scalper import read_snapshot, read_history as convergence_history
+                    query = parse_qs(parsed.query)
+                    if parsed.path == "/api/cl-bz-snapshot":
+                        if parsed.query:
+                            return self.reply(400, b"Unexpected snapshot query", head=head)
+                        data = read_snapshot(convergence)
+                        data["reset_token"] = convergence_reset_token
+                        data["var_session"] = session_control.status()
+                    else:
+                        window = query.get("range", ["24h"])[0]
+                        if window not in WINDOWS or set(query) - {"range", "through"}:
+                            return self.reply(400, b"Invalid history window", head=head)
+                        try:
+                            through = float(query["through"][0]) if "through" in query else None
+                            if through is not None and (not math.isfinite(through) or through <= 0):
+                                raise ValueError()
+                        except ValueError:
+                            return self.reply(400, b"Invalid history timestamp", head=head)
+                        data = convergence_history(convergence, window, through)
+                    return self.reply(200, json.dumps(data, ensure_ascii=False).encode(), "application/json; charset=utf-8", head)
                 if parsed.path == "/api/var-session" and not parsed.query:
                     data = {**session_control.status(), "csrf_token": session_token}
                     return self.reply(200, json.dumps(data).encode(), "application/json", head)
@@ -331,18 +367,22 @@ def make_server(experiment, port=9876):
         def do_POST(self):
             if self.path == "/api/var-session":
                 return self.update_session()
-            if self.path != "/api/reset":
+            is_convergence = self.path == "/api/cl-bz-reset" and convergence is not None
+            if self.path != "/api/reset" and not is_convergence:
                 return self.reply(405, b"Unsupported operation")
             host = self.headers.get("Host", "")
             try:
                 parsed_host = urlsplit("http://" + host)
-                valid_host = parsed_host.hostname in {"localhost", "127.0.0.1"} and not parsed_host.username and not parsed_host.path
+                valid_host = (parsed_host.hostname in {"localhost", "127.0.0.1"} and not parsed_host.username
+                              and not parsed_host.password and not parsed_host.path and not parsed_host.query and not parsed_host.fragment)
+                parsed_host.port
             except ValueError:
                 valid_host = False
             origin = self.headers.get("Origin")
             if (not valid_host or origin is not None and origin != "http://" + host
                     or self.headers.get("Sec-Fetch-Site") == "cross-site"
-                    or not secrets.compare_digest(self.headers.get("X-Reset-Token", ""), reset_token)):
+                    or is_convergence and origin != "http://" + host
+                    or not secrets.compare_digest(self.headers.get("X-Reset-Token", "").encode(), (convergence_reset_token if is_convergence else reset_token).encode())):
                 return self.reply(403, b"Same-origin reset request required")
             if self.headers.get("Content-Type") != "application/json" or self.headers.get("Transfer-Encoding"):
                 return self.reply(400, b"JSON request required")
@@ -354,7 +394,7 @@ def make_server(experiment, port=9876):
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict) or set(body) != {"generation"}:
                     raise ValueError()
-                state = request_reset(experiment, body["generation"])
+                state = request_reset(convergence if is_convergence else experiment, body["generation"])
                 self.reply(202, json.dumps({"reset": state}).encode(), "application/json")
             except GridError:
                 self.reply(409, b'{"error":"Simulation changed or is busy; refresh and retry"}', "application/json")
@@ -403,6 +443,7 @@ def serve_dashboard(args):
     if not 0 <= args.port <= 65535:
         raise GridError("Dashboard port must be between 0 and 65535")
     experiment = Experiment.load(args.experiments)
-    with make_server(experiment, args.port) as server:
+    convergence = Experiment.load(args.convergence_experiments) if getattr(args, "convergence_experiments", None) else None
+    with make_server(experiment, args.port, convergence) as server:
         emit({"event": "dashboard", "url": f"http://127.0.0.1:{server.server_port}", "paper_reset_enabled": True})
         server.serve_forever()

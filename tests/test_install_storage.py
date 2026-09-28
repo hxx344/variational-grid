@@ -174,6 +174,50 @@ class StorageTests(unittest.TestCase):
         self.assertTrue((self.app / '.deploy.DEF456').exists())
         self.assertTrue((self.app / 'releases/.staging.DEF456').exists())
 
+    def test_cl_bz_config_protects_output_and_base_even_when_companion_is_disabled(self):
+        output_release = self.release(1, ready=False)
+        base_release = self.release(2, ready=False)
+        output = output_release / 'cl-bz-scalper-data'
+        output.mkdir()
+        sentinel = output / 'ledger.sqlite3'
+        sentinel.write_bytes(b'preserved CL/BZ ledger')
+        base_path = base_release / 'base.json'
+        base_path.write_text('{}')
+        for relative in (False, True):
+            with self.subTest(relative=relative):
+                configured = os.path.relpath(output, self.conf) if relative else str(output)
+                configured_base = os.path.relpath(base_path, self.conf) if relative else str(base_path)
+                (self.conf / 'cl-bz-scalper.json').write_text(json.dumps({
+                    'kind': 'cl_bz_scalper', 'output_dir': configured, 'base_config': configured_base}))
+                self.manager = self.storage_type(self.app, self.conf, self.state)
+                self.assertFalse(self.manager.remove(output_release))
+                self.assertFalse(self.manager.remove(base_release))
+                self.assertEqual(sentinel.read_bytes(), b'preserved CL/BZ ledger')
+
+    def test_cl_bz_service_process_keeps_its_own_older_release(self):
+        releases = [self.release(index) for index in range(1, 6)]
+        self.manager.current = releases[-1]
+        services = ('variational-grid.service', 'variational-grid-web.service', 'variational-grid-cl-bz.service')
+        for pid, release in enumerate(releases[:3], start=1001):
+            (self.proc / str(pid)).mkdir()
+            self.symlink(self.proc / str(pid) / 'cwd', release)
+        def inspect(args, **kwargs):
+            pid = services.index(args[-1]) + 1001
+            return subprocess.CompletedProcess(args, 0, f'LoadState=loaded\nMainPID={pid}\n', '')
+        with patch('subprocess.run', side_effect=inspect) as calls:
+            self.manager.inspect_services()
+        self.assertEqual(calls.call_count, 3)
+        self.prune(releases[3])
+        self.assertTrue(all(release.is_dir() for release in releases))
+
+    def test_qqq_previous_output_stays_protected_after_migration(self):
+        release = self.release(1, ready=False)
+        (self.conf / 'qqq-hedge.json').write_text(json.dumps({
+            'kind': 'qqq_hedge', 'output_dir': str(self.state / 'new-qqq'),
+            'previous_output_dir': str(release / 'historical-qqq')}))
+        self.manager = self.storage_type(self.app, self.conf, self.state)
+        self.assertFalse(self.manager.remove(release))
+
     def test_removes_unreferenced_validation_and_keeps_shared_keys(self):
         shared_key = 'a' * 64
         self.release(1, key=shared_key)
