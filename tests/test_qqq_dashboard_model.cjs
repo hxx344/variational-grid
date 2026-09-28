@@ -24,6 +24,28 @@ test('net leg PnL reconciles to total without subtracting already charged fees a
   assert.equal(Q.reconciliation({...row,qqq:{}}), null);
 });
 
+test('batch attribution reconciles separately from negative average-cost realized PnL', () => {
+  const row = {qqq:{realized_pnl_usdc:'-4.6',total_pnl_usdc:'-2.6'},qqq_batch_pnl:{status:'ready',
+    gross_pnl_usdc:'.4',closed_fees_usdc:'0',net_pnl_usdc:'.4',remaining_pnl_usdc:'-3'}};
+  assert.equal(Q.batchAttribution(row).check,true);
+  assert.equal(Q.batchAttribution(row).net_pnl_usdc,'.4');
+  assert.equal(Q.batchAttribution({...row,qqq:{total_pnl_usdc:'2'}}).check,false);
+  assert.equal(Q.batchAttribution({...row,qqq:{}}).check,null);
+});
+
+test('unavailable and incomplete batch data is never reported as zero or a reconciliation pass', () => {
+  for (const value of [undefined,{status:'unavailable',reason:'checkpoint_unavailable'},
+    {status:'ready',net_pnl_usdc:'0'},{status:'ready',gross_pnl_usdc:'NaN',closed_fees_usdc:'0',net_pnl_usdc:'0',remaining_pnl_usdc:'0'}]) {
+    const result = Q.batchAttribution({qqq_batch_pnl:value});
+    assert.equal(result.ready,false);
+    assert.equal(result.net_pnl_usdc,undefined);
+  }
+  const zero = Q.batchAttribution({qqq:{total_pnl_usdc:'0'},qqq_batch_pnl:{status:'ready',
+    gross_pnl_usdc:'0',closed_fees_usdc:'0',net_pnl_usdc:'0',remaining_pnl_usdc:'0'}});
+  assert.equal(zero.ready,true);
+  assert.equal(zero.check,true);
+});
+
 test('signed exposure chart contains both threshold boundaries and actual residual', () => {
   const flat = Q.exposureDomain([0,null],0);
   assert.ok(flat[0] < 0 && flat[1] > 0);

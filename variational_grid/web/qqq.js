@@ -100,6 +100,16 @@
     if (!values.every(M.finite)) return null;
     return Math.abs(Number(values[0]) + Number(values[1]) - Number(values[2])) <= Math.max(1e-8, ...values.map(v => Math.abs(Number(v)) * 1e-10));
   }
+  function batchAttribution(row) {
+    const value = row?.qqq_batch_pnl;
+    if (value?.status !== 'ready' || !['gross_pnl_usdc','closed_fees_usdc','net_pnl_usdc','remaining_pnl_usdc'].every(k => M.finite(value[k]))) {
+      const reasons = {checkpoint_unavailable:'同一采样的批次快照暂不可用',batch_quantity_mismatch:'批次数量与仓位无法核对',batch_fee_mismatch:'批次手续费无法核对',batch_cost_unavailable:'批次成本资料不足'};
+      return {ready:false, detail:reasons[value?.reason] || '批次收益暂不可用'};
+    }
+    const values = [value.net_pnl_usdc, value.remaining_pnl_usdc, row?.qqq?.total_pnl_usdc];
+    const check = values.every(M.finite) ? Math.abs(Number(values[0]) + Number(values[1]) - Number(values[2])) <= Math.max(1e-8, ...values.map(v => Math.abs(Number(v)) * 1e-10)) : null;
+    return {...value, ready:true, check};
+  }
   function sampleIndex(points, ts) {
     if (!points.length) return -1;
     if (ts === null) return points.length - 1;
@@ -190,7 +200,7 @@
     if (row?.pricing_mode === 'shared_indicative_v1') return `${row.cache_used ? '缓存参考价估算' : '共享参考价估算'} · 报价龄 ${M.number(row.quote_age_seconds, 1)} 秒 · 源数量 ${M.number(row.source_qty, 6)}${row.half_spread_percent == null ? '' : ' · 半点差 ' + percent(row.half_spread_percent, 4)}`;
     return row?.venue === 'Variational' ? '原精确数量报价' : isScalperModel(row?.maker_model) ? '剥头皮 · 严格 Maker 队列模拟' : 'Maker 队列模拟';
   }
-  const helpers = {percent, label, isScalper, distanceFree, strategyTitle, entryDistanceRule, seconds, scalperStatus, entryProgress, fillReason, encoding, reconciliation, sampleIndex, exposureDomain, dollarExposureDomain, dollarHedge, hedgeLimit, historyValue, freshness, marketStatus, hedgeStatus, cooldownNotice, referenceStatus, fillPricing, pairPauseNotice};
+  const helpers = {percent, label, isScalper, distanceFree, strategyTitle, entryDistanceRule, seconds, scalperStatus, entryProgress, fillReason, encoding, reconciliation, batchAttribution, sampleIndex, exposureDomain, dollarExposureDomain, dollarHedge, hedgeLimit, historyValue, freshness, marketStatus, hedgeStatus, cooldownNotice, referenceStatus, fillPricing, pairPauseNotice};
   if (typeof module !== 'undefined' && module.exports) {module.exports = helpers; return;}
   root.QQQModel = helpers;
   const $ = id => document.getElementById(id), E = M.escape;
@@ -359,13 +369,20 @@
     return values.map((value, i) => `<td data-label="${E(headers[i])}"${i === 0 && row ? ` class="row-name ${cls(row)}"` : ''}>${value}</td>`).join('');
   }
   function renderLedgers() {
-    if (!rows().length) {$('leg-ledger').innerHTML = $('volume-ledger').innerHTML = '<div class="empty">等待账户账本</div>'; return;}
-    const headers = ['账户 / 标的','仓位数量','名义金额 / USDC','持仓均价','估值价格','已实现 / USDC','未实现 / USDC','手续费 / USDC','净损益 / USDC'];
+    if (!rows().length) {$('leg-ledger').innerHTML = $('batch-ledger').innerHTML = $('volume-ledger').innerHTML = '<div class="empty">等待账户账本</div>'; return;}
+    const headers = ['账户 / 标的','仓位数量','名义金额 / USDC','持仓均价','估值价格','整仓均价已实现 / USDC','均价未实现 / USDC','累计手续费 / USDC','净损益 / USDC'];
     $('leg-ledger').innerHTML = table(headers, rows().flatMap(r => ['qqq','us100'].map(key => {
       const leg = r[key], venue = key === 'qqq' ? 'Lighter QQQ' : 'Variational US100';
       return `<tr>${cells(headers, [`<span>${E(label(r))}<span class="secondary">${venue}</span></span>`,M.signed(leg?.qty, 6),M.number(M.finite(leg?.notional_usdc) ? Math.abs(Number(leg.notional_usdc)) : null, 2),M.number(leg?.average_entry, 4),M.number(leg?.mark, 4),pnl(leg?.realized_pnl_usdc),pnl(leg?.unrealized_pnl_usdc),M.number(leg?.fees_usdc, 4),pnl(leg?.total_pnl_usdc)],r)}</tr>`;
     })).join(''));
-    const volumeHeaders = ['账户','QQQ 成交量 / QQQ','US100 成交量 / US100','QQQ 成交额 / USDC','US100 成交额 / USDC','合计成交额 / USDC','组合已实现 / USDC','组合未实现 / USDC','两腿净损益核对'];
+    const batchHeaders = ['账户','逐批止盈净收益 / USDC','剩余批次浮动净损益 / USDC','QQQ 净损益 / USDC','批次口径核对'];
+    $('batch-ledger').innerHTML = table(batchHeaders, rows().map(r => {
+      const batch = batchAttribution(r);
+      const earned = batch.ready ? `<span>${pnl(batch.net_pnl_usdc)}<span class="secondary">毛收益 ${M.signed(batch.gross_pnl_usdc, 2)} · 已平部分手续费 ${M.number(batch.closed_fees_usdc, 4)}</span></span>` : `<span>—<span class="secondary">${E(batch.detail)}</span></span>`;
+      const check = !batch.ready || batch.check === null ? '无法核对' : batch.check ? '一致' : '不一致';
+      return `<tr>${cells(batchHeaders, [E(label(r)),earned,pnl(batch.ready ? batch.remaining_pnl_usdc : null),pnl(r.qqq?.total_pnl_usdc),`<span class="${batch.ready && batch.check !== null ? 'check' + (batch.check ? '' : ' error') : 'small'}">${check}</span>`],r)}</tr>`;
+    }).join(''));
+    const volumeHeaders = ['账户','QQQ 成交量 / QQQ','US100 成交量 / US100','QQQ 成交额 / USDC','US100 成交额 / USDC','合计成交额 / USDC','组合均价已实现 / USDC','组合均价未实现 / USDC','两腿净损益核对'];
     $('volume-ledger').innerHTML = table(volumeHeaders, rows().map(r => {
       const check = reconciliation(r);
       return `<tr>${cells(volumeHeaders, [E(label(r)),M.number(r.qqq?.volume_units, 6),M.number(r.us100?.volume_units, 6),M.number(r.qqq?.turnover_usdc, 2),M.number(r.us100?.turnover_usdc, 2),M.number(r.turnover_usdc, 2),pnl(r.realized_pnl_usdc),pnl(r.unrealized_pnl_usdc),`<span class="check ${check === false ? 'error' : ''}">${check === null ? '缺少数据' : check ? '一致' : '不一致'}</span>`],r)}</tr>`;

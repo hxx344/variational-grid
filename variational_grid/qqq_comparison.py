@@ -554,6 +554,10 @@ def read_qqq_dashboard(experiment, window, *, include_history=True, include_deta
             return result
         summary = result["summary"] = decode_summary(raw[0])
         names = [r["name"] for r in summary["scenarios"]]
+        by_name = {row["name"]: row for row in summary["scenarios"]}
+        if include_details:
+            for row in by_name.values():
+                row["qqq_batch_pnl"] = {"status": "unavailable", "reason": "checkpoint_unavailable"}
         # Ledgers retain only the last two account snapshots. Capture this
         # published point before a long history scan lets the writer prune it.
         details = include_details
@@ -567,6 +571,15 @@ def read_qqq_dashboard(experiment, window, *, include_history=True, include_deta
                     details = False
                     break
                 account = json.loads(raw[0])
+                # Use only the published checkpoint, never current meta.account.
+                # No writes, replay, or full-history scan is needed for old ledgers.
+                from .qqq_pnl import batch_pnl
+                row = by_name[name]
+                row["qqq_batch_pnl"] = batch_pnl(account, row.get("qqq", {}).get("mark"),
+                                                 getattr(getattr(config, "settings", None), "lighter_fee_bps", None))
+                if not isinstance(account.get("slots"), list):
+                    details = False
+                    continue
                 result["positions"].extend({"scenario": name, **slot} for slot in account["slots"] if dec(slot["qty"]) > 0)
                 for raw, in ledger.execute("SELECT payload FROM fills WHERE frame_ts<=? ORDER BY id DESC LIMIT 100", (summary["ts"],)):
                     result["trades"].append({"scenario": name, **json.loads(raw)})

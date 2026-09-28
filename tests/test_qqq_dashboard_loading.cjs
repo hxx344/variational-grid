@@ -104,3 +104,24 @@ test('expired portal authentication is distinguished from a market closure or ne
   const p=page(); p.respond(p.requests[0],{},401); await flush();
   assert.match(p.node('notice').textContent,/页面访问授权失效，请从工作台重新打开此项目/);
 });
+
+test('ledger renders both cost bases and retains original totals while unavailable batches stay missing', async() => {
+  const p=page(), payload=snapshot(), row=payload.summary.scenarios[0];
+  row.qqq={realized_pnl_usdc:'-4.6',unrealized_pnl_usdc:'2',total_pnl_usdc:'-2.6',fees_usdc:'0'};
+  row.qqq_batch_pnl={status:'ready',gross_pnl_usdc:'.4',closed_fees_usdc:'0',net_pnl_usdc:'.4',remaining_pnl_usdc:'-3'};
+  p.respond(p.requests[0],payload); await flush();
+  assert.match(p.node('leg-ledger').innerHTML,/整仓均价已实现/);
+  assert.match(p.node('leg-ledger').innerHTML,/class="loss">-4\.60/);
+  assert.match(p.node('batch-ledger').innerHTML,/逐批止盈净收益/);
+  assert.match(p.node('batch-ledger').innerHTML,/class="gain">\+0\.40/);
+  assert.match(p.node('batch-ledger').innerHTML,/class="loss">-3\.00/);
+  assert.match(p.node('batch-ledger').innerHTML,/class="loss">-2\.60/);
+  assert.match(p.node('batch-ledger').innerHTML,/class="check">一致/);
+  p.node('refresh').onclick();
+  row.qqq_batch_pnl={status:'unavailable',reason:'batch_cost_unavailable'};
+  p.respond(p.requests.at(-1),payload); await flush();
+  assert.match(p.node('batch-ledger').innerHTML,/批次成本资料不足/);
+  assert.match(p.node('batch-ledger').innerHTML,/无法核对/);
+  assert.doesNotMatch(p.node('batch-ledger').innerHTML,/\+0\.00|\+0\.40|class="check">一致/);
+  assert.match(p.node('leg-ledger').innerHTML,/-4\.60/);
+});
