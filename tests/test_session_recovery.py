@@ -1,6 +1,7 @@
 """Credential replacement and high-frequency locks remain recoverable."""
 from contextlib import redirect_stdout
 import io
+import getpass
 from pathlib import Path
 import tempfile
 import time
@@ -15,6 +16,26 @@ from test_grid import token
 
 
 class SessionRecoveryTests(unittest.TestCase):
+    def test_cli_refuses_echoing_fallback_before_reading_or_saving(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("variational_grid.cli.getpass.getpass", getpass.fallback_getpass), \
+                 patch("getpass._raw_input") as read, \
+                 patch("variational_grid.cli.CandidateSession.check_session") as verify, \
+                 patch("variational_grid.cli.save_session") as save, redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(main(["init-session", "--config", str(Path(directory) / "config.json")]), 2)
+                read.assert_not_called()
+                verify.assert_not_called()
+                save.assert_not_called()
+            self.assertIn("Hidden token input is unavailable", output.getvalue())
+
+    def test_cli_closed_input_returns_actionable_error_without_saving(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("variational_grid.cli.getpass.getpass", side_effect=EOFError), \
+                 patch("variational_grid.cli.save_session") as save, redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(main(["init-session", "--config", str(Path(directory) / "config.json")]), 2)
+                save.assert_not_called()
+            self.assertIn("Update Var token", output.getvalue())
+
     def test_failed_replace_preserves_session_cleans_owned_temp_and_can_retry(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "session.json"

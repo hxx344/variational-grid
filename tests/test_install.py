@@ -1,7 +1,7 @@
 """Run the real installer against a temporary Linux filesystem and local Git source.
 
-Only package installation, account/service management and the remote session check
-are stubbed. Git, archive extraction, config validation and release switching run.
+Only package installation and account/service management are stubbed.
+Git, archive extraction, config validation and release switching run.
 """
 import json
 import os
@@ -56,7 +56,6 @@ class InstallTests(unittest.TestCase):
             installer = installer.replace(original, str(replacement))
         # CI need not be root. All absolute install targets above are in this temp dir.
         installer = installer.replace("if [[ ${EUID} -ne 0 ]]; then", "if false; then")
-        installer = installer.replace("</dev/tty", "</dev/null")  # Interactive import is stubbed below.
         installer = installer.replace("Path('/proc')", f"Path({str(self.proc)!r})")
         self.script = self.root / "install.sh"
         self.script.write_text(installer)
@@ -123,14 +122,7 @@ if name == "install":
             filtered.append(args[i]); i += 1
     os.execv("/usr/bin/install", ["install", *filtered])
 if name == "runuser":
-    if args[3:7] != ["python3", "-m", "variational_grid", "check-session"]:
-        if args[3:7] == ["python3", "-m", "variational_grid", "init-session"] and os.environ.get("GRID_INSTALL_TEST_MISSING_SESSION"):
-            print("Fixture: hidden session import completed")
-        else:
-            raise SystemExit("Unexpected credential operation in installer test")
-    elif os.environ.get("GRID_INSTALL_TEST_MISSING_SESSION"):
-        # Execute the actual missing-file error path, which cannot contact the API.
-        raise SystemExit(subprocess.call(args[3:]))
+    raise SystemExit("Deployment must never check or import credentials")
 '''
         for name in ("apt-get", "df", "dpkg-query", "git", "id", "useradd", "install", "runuser", "systemctl"):
             path = self.bin / name
@@ -150,7 +142,8 @@ if name == "runuser":
         return self.git("rev-parse", "HEAD")
 
     def install(self, *args, expected=0):
-        result = subprocess.run(["bash", str(self.script), *args], env=self.env, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(["bash", str(self.script), *args], env=self.env, stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, start_new_session=True, timeout=60)
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return result
 
@@ -160,23 +153,26 @@ if name == "runuser":
     def restarts(self):
         return [call[-1] for call in self.calls() if call[:2] == ['systemctl', 'restart']]
 
-    def test_stack_missing_terminal_stops_before_service_activation(self):
-        self.env.update(VARIATIONAL_SESSION_STDIN='1', GRID_INSTALL_TEST_MISSING_SESSION='1')
-        result = self.install(expected=1)
-        self.assertIn('A terminal is required', result.stderr)
-        self.assertEqual(self.restarts(), [])
-        self.assertFalse((self.app / 'current').exists())
+    def test_missing_session_with_closed_stdin_installs_engine_and_dashboard(self):
+        result = self.install()
+        self.assertIn('vr-token is optional during deployment', result.stdout)
+        self.assertFalse((self.state / 'session.json').exists())
+        self.assertEqual(self.restarts(), ['variational-grid.service', 'variational-grid-web.service'])
+        self.assertTrue((self.app / 'current').exists())
+        self.assertFalse(any(c[0] == 'runuser' for c in self.calls()))
 
-    def test_stack_detached_terminal_can_import_a_missing_session(self):
+    def test_detached_terminal_does_not_prompt_or_consume_input(self):
         import pty
         master, slave = pty.openpty()
         self.addCleanup(os.close, master)
         self.addCleanup(os.close, slave)
-        self.env.update(VARIATIONAL_SESSION_STDIN='1', GRID_INSTALL_TEST_MISSING_SESSION='1')
+        self.env['VARIATIONAL_SESSION_STDIN'] = '1'  # Old stack versions must work too.
         result = subprocess.run(['bash', str(self.script)], env=self.env, stdin=slave,
                                 capture_output=True, text=True, start_new_session=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('Fixture: hidden session import completed', result.stdout)
+        self.assertNotIn('vr-token (hidden)', result.stdout + result.stderr)
+        self.assertFalse(any(c[0] == 'runuser' for c in self.calls()))
+        self.assertFalse((self.state / 'session.json').exists())
         self.assertTrue((self.app / 'current').exists())
 
     def test_rename_migrates_only_the_known_legacy_remote(self):
@@ -252,7 +248,7 @@ if name == "runuser":
         result = self.install()
         self.assertIn('skipping legacy grid migrations', result.stdout)
         self.assertIn('vr-token authenticated paper pricing', result.stdout)
-        self.assertTrue(any(c[0] == 'runuser' and 'check-session' in c for c in self.calls()))
+        self.assertFalse(any(c[0] == 'runuser' for c in self.calls()))
         self.assertEqual((self.conf / 'mode').read_text().strip(), 'qqq-hedge')
         self.assertIn('Description=Lighter QQQ / Variational US100 paper scalper\n', self.unit.read_text())
         self.assertIn('Description=Lighter QQQ / Variational US100 paper scalper dashboard (localhost)', self.web_unit.read_text())
@@ -600,7 +596,7 @@ if name == "runuser":
         self.install()
         self.assertEqual(self.restarts(), [])
         self.assertEqual(Experiment.load(qqq_path).identity(), identity)
-        self.assertTrue(any(c[0] == 'runuser' and 'check-session' in c for c in self.calls()))
+        self.assertFalse(any(c[0] == 'runuser' for c in self.calls()))
 
     def test_qqq_session_path_is_validated_and_changes_restart_without_reset(self):
         self.install('--qqq-hedge')
@@ -622,12 +618,17 @@ if name == "runuser":
         self.install()
         self.assertEqual(self.restarts(), [])
 
-    def test_qqq_missing_token_prompts_hidden_import(self):
-        self.env['GRID_INSTALL_TEST_MISSING_SESSION'] = '1'
-        result = self.install('--qqq-hedge')
-        self.assertIn('Fixture: hidden session import completed', result.stdout)
-        self.assertIn('vr-token', result.stdout)
-        self.assertIn('compare --experiments', self.unit.read_text())
+    def test_invalid_session_is_preserved_and_does_not_trigger_restarts(self):
+        self.install('--qqq-hedge')
+        session = self.state / 'session.json'
+        session.write_text('{"token":"expired-fixture"}')
+        session.chmod(0o600)
+        original = session.read_bytes()
+        self.log.write_text('')
+        self.install()
+        self.assertEqual(session.read_bytes(), original)
+        self.assertEqual(self.restarts(), [])
+        self.assertFalse(any(c[0] == 'runuser' for c in self.calls()))
 
     def test_qqq_examples_revalidate_without_overwriting_config_and_web_only_restarts_web(self):
         self.install('--qqq-hedge')
@@ -1165,15 +1166,12 @@ if name == "runuser":
         self.assertFalse(self.log.exists())
         self.assertFalse(self.app.exists())
 
-    def test_missing_session_prompts_cleanly_then_completes_installation(self):
-        self.env["GRID_INSTALL_TEST_MISSING_SESSION"] = "1"
-        result = self.install()
-        self.assertIn("Cannot read session", result.stdout)
-        self.assertIn("public candles and statistics do not require one", result.stdout)
-        self.assertIn("Fixture: hidden session import completed", result.stdout)
-        self.assertNotIn("Traceback", result.stdout + result.stderr)
-        self.assertNotIn("sys.excepthook", result.stdout + result.stderr)
-        self.assertIn("compare --experiments", self.unit.read_text())
+    def test_historical_mode_installs_without_session_and_explains_separate_import(self):
+        result = self.install('--compare')
+        self.assertIn('Use init-session separately', result.stdout)
+        self.assertFalse((self.state / 'session.json').exists())
+        self.assertFalse(any(c[0] == 'runuser' for c in self.calls()))
+        self.assertIn('compare --experiments', self.unit.read_text())
 
     def test_cleanup_keeps_current_backup_and_older_engine_and_web(self):
         self.install()

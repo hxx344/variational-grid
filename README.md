@@ -49,7 +49,7 @@ python -m variational_grid dashboard --experiments qqq-hedge.example.json --conv
 curl -fsSL https://raw.githubusercontent.com/hxx344/project-aggregation/main/install-all.sh | sudo bash -s -- --only variational,hub
 ```
 
-工作台自动添加 `Variational Grid`，通过服务器 `127.0.0.1:9876` 显示原始页面；只需转发工作台 `3100`。项目管理无需填写用户名、密码或行情 token；原模块保持只监听本机，通过工作台访问时由工作台登录和页面授权保护。首次安装默认 QQQ / US100 三组止盈对照，已有策略模式保留；首次/令牌失效时在 SSH 终端按提示隐藏输入 `vr-token`。
+工作台自动添加 `Variational Grid`，通过服务器 `127.0.0.1:9876` 显示原始页面；只需转发工作台 `3100`。项目管理无需填写用户名、密码或行情 token；原模块保持只监听本机，通过工作台访问时由工作台登录和页面授权保护。首次安装默认 QQQ / US100 三组止盈对照，已有策略模式保留；部署不要求输入 `vr-token`，完成后可在 QQQ 页面右上角 **更新 Var token** 中补填或刷新。
 
 新增只读 `GET /api/hub/summary?schemaVersion=2`（无参数也返回 v2）：仅取最新发布采样和进程状态，不调用行情、不读取 token、不扫描历史或各组仓位。各组本轮累计模拟盈亏分别显示，单位 USDC，不计入工作台真实资产；暂停、停止、过期、重置及合成行情均保留相应状态。QQQ 摘要时间同时受已有 US100 仓位估值时间限制。三种监控页在工作台中隐藏时暂停前台刷新，重新进入立即补查，后台模拟继续运行。
 
@@ -62,7 +62,7 @@ python -m variational_grid init-session --curl-file "C:/path/to/variational-me.t
 python -m variational_grid run
 ```
 
-输入文件是 Chrome 中 `GET https://omni.variational.io/api/me` 请求的 **Copy as cURL (bash)**，保存为本地 UTF-8 文本。程序只解析文本，绝不执行其中的命令；只提取 `vr-token` 和普通 User-Agent。也可以运行 `python -m variational_grid init-session`，在隐藏输入提示中粘贴 Cookie 的令牌值。
+输入文件是 Chrome 中 `GET https://omni.variational.io/api/me` 请求的 **Copy as cURL (bash)**，保存为本地 UTF-8 文本。程序只解析文本，绝不执行其中的命令；只提取 `vr-token` 和普通 User-Agent。也可以单独运行 `python -m variational_grid init-session`，在隐藏输入提示中粘贴 Cookie 的令牌值；终端不支持隐藏输入时会直接提示错误，不回退到明文输入。默认 QQQ 模式可直接在页面补填，无需运行此命令。
 
 首次导入自动创建 `config.local.json` 和 `data/session.json`。运行时可用 Ctrl+C 停止；再次启动使用原账本续跑，不会把已有模拟持仓重复建仓。停止期间没有行情采样，不会补造历史成交。
 
@@ -210,7 +210,7 @@ python -m http.server 0 --bind 127.0.0.1 --directory data/comparison-pct-05-1-2-
 curl -fsSL https://raw.githubusercontent.com/hxx344/variational-grid/main/install.sh | sudo bash -s -- --qqq-hedge
 ```
 
-这一条命令会自动安装 Python 与 Git、下载并验证代码、创建独立服务账户、配置开机启动和失败后自动重启，并启动 **QQQ / US100 的 0.05% / 0.1% / 0.2% 三组止盈对照模拟**。首次安装只需按提示粘贴 `vr-token`（隐藏输入），不需要钱包私钥。重复执行同一命令升级，保留配置、会话与账本。部署前后自动回收旧代码，通常只保留当前版本和一份可回退版本；网页或引擎仍在运行的更早版本会额外保留，等相关服务正常升级后再回收。新版本预检失败时不会切换正在运行的代码，未启用的失败候选与本轮临时目录自动清理。
+这一条命令会自动安装 Python 与 Git、下载并验证代码、创建独立服务账户、配置开机启动和失败后自动重启，并启动 **QQQ / US100 的 0.05% / 0.1% / 0.2% 三组止盈对照模拟**。安装过程不读取或验证 `vr-token`，无令牌、令牌过期或没有交互终端均可完成部署，也不需要钱包私钥。QQQ 页面可在部署后补填令牌；缺少有效会话时，依赖鉴权的模拟操作暂停，保存有效令牌后自动恢复。重复执行同一命令升级，保留配置、会话与账本。部署前后自动回收旧代码，通常只保留当前版本和一份可回退版本；网页或引擎仍在运行的更早版本会额外保留，等相关服务正常升级后再回收。新版本预检失败时不会切换正在运行的代码，未启用的失败候选与本轮临时目录自动清理。
 
 重复部署会按变化处理，输出会说明跳过的步骤：
 
@@ -219,7 +219,7 @@ curl -fsSL https://raw.githubusercontent.com/hxx344/variational-grid/main/instal
 - 服务器部署只做离线快速预检：源码语法与模块导入、示例配置、网页资源和 SQLite 支持。完整回归测试及安装器集成测试由 GitHub Actions 执行，首次安装和代码升级均不在服务器运行 unittest，也无需安装 Node.js。
 - 快速预检按运行代码、部署脚本、示例配置、包配置及 Python/SQLite 环境缓存；测试和文档变化可直接复用缓存，检查失败不写成功标记。已有用户配置仍会在每次切换前验证。
 - 服务配置内容未变时不重写、不重复加载；代码与配置未变、服务正常时不重启。仅网页资源或 dashboard 模块变化只重启网页服务，共用运行代码变化重启相关服务。
-- 每次仍执行轻量配置校验和会话有效性检查；停止的服务会恢复启动。中断的服务配置加载会在下次执行时重试，已有配置和账本始终保留。
+- 每次仍执行轻量配置校验；停止的服务会恢复启动。部署不检查会话或请求令牌，中断的服务配置加载会在下次执行时重试，已有配置和账本始终保留。
 - 下载和解压前检查可用容量与 inode；空间不足时提前停止，不切换服务。检查保护两个服务实际运行目录、源码目录、配置及数据路径；无法确认运行目录时停止清理。未知目录、符号链接和包含挂载点的目录不删除，过期验证缓存仅在没有保留版本引用时回收。
 
 只回收旧部署、无需升级或重启服务时，可执行：
@@ -258,11 +258,11 @@ ssh -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCo
 - 网页日志：`journalctl -u variational-grid-web -f`；重启网页：`sudo systemctl restart variational-grid-web`
 - 停止：`sudo systemctl stop variational-grid`
 - 修改配置后：`sudo systemctl restart variational-grid`
-- 刷新会话：重复执行安装命令；有效会话保留，已过期会话重新提示输入。
+- 刷新会话：QQQ 页面右上角 **更新 Var token** → **验证并保存**；无需重跑安装或重启。历史 CL/BZ 模式仍使用前述 `init-session` 单独导入。
 
-首次安装出现 `Cannot read session; run init-session first` 表示服务器尚未保存会话，接下来会提示隐藏输入令牌。它不表示交易所拒绝公开行情。新版使用 `check-session` 输出简短状态；旧版的长堆栈及 Ubuntu `apport` 的 `/-c` 报错是安装预检查未捕获异常引起的，可以 Ctrl+C 后重新执行上方安装命令更新。
+旧版安装若停在 `vr-token (hidden)`，可以 Ctrl+C 后重新执行上方安装命令升级。新版不在部署期间检查或读取令牌；完成后打开 QQQ 页面补填即可。运行中的 `Cannot read session` 表示尚未保存有效会话，不影响页面访问，也不表示交易所拒绝公开行情。
 
-安装流程由现有 Ubuntu CI 运行隔离测试：使用临时目录和本地 Git 源验证首次安装、重复执行跳过耗时步骤、文档与前端更新、配置变化、模式切换、停止服务恢复、配置加载中断恢复、配置与数据保留，以及旧版回收、两个服务分别保留旧代码、空间不足提前退出和失败候选清理。存储辅助逻辑另用原生 Python 测试路径保护、挂载点和验证缓存引用。测试替代系统服务管理和远端会话检查，不访问真实账户。本地只使用 Windows 原生工具，不使用 WSL；CI 通过不代表已在你的服务器上执行升级。
+安装流程由现有 Ubuntu CI 运行隔离测试：使用临时目录和本地 Git 源验证首次安装、无终端及缺失/无效令牌时完成部署、重复执行跳过耗时步骤、文档与前端更新、配置变化、模式切换、停止服务恢复、配置加载中断恢复、配置与数据保留，以及旧版回收、两个服务分别保留旧代码、空间不足提前退出和失败候选清理。存储辅助逻辑另用原生 Python 测试路径保护、挂载点和验证缓存引用。测试替代系统服务管理，禁止部署调用凭据检查或导入，不访问真实账户。本地只使用 Windows 原生工具，不使用 WSL；CI 通过不代表已在你的服务器上执行升级。
 
 ## 接口依据
 
@@ -419,7 +419,7 @@ QQQ模式只读Lighter公开盘口/成交，Variational 切为携带 **vr-token*
 | `POST /api/quotes/indicative`，`US100S`、`qty=0.01` | 三组共用的指示性参考价与数量限制 | 源报价超过 3 秒时，在下一次采样尝试刷新；默认 2 秒采样通常约 4 秒一次，网络延迟和报价时间会影响实际间隔 |
 | `GET /api/metadata/supported_assets?cex_asset=US100S` | 合约定义、交易时段、休市和只减仓状态 | 报价前检查，本地正常缓存约 30 秒；不会为每组分别请求 |
 
-模拟开仓、止盈及 US100 对冲不会发送真实订单；共享参考价也不会按三组各自成交数量追加询价。运行时不轮询 `/api/me` 或 `/api/candles`，安装时用 `/api/me` 验证保存的会话。Metadata 同样经固定 Var 域名携带会话读取；它仍属于公开合约信息，不作为成交价格。下面的请求间隔是程序自身预算，不代表平台公布的 API 限额。
+模拟开仓、止盈及 US100 对冲不会发送真实订单；共享参考价也不会按三组各自成交数量追加询价。运行时不轮询 `/api/me` 或 `/api/candles`，页面或 CLI 主动导入令牌时才用 `/api/me` 验证候选会话，安装不验证会话。Metadata 同样经固定 Var 域名携带会话读取；它仍属于公开合约信息，不作为成交价格。下面的请求间隔是程序自身预算，不代表平台公布的 API 限额。
 
 `pricing.refresh_after_seconds=3`：源报价年龄不超过3秒直接复用，超过3秒尝试更新。`pricing.max_age_seconds=60`：刷新遇到排队、429或网络失败时，默认最多使用60秒缓存，随后暂停新网格和对冲。原始报价写入 `quote-cache.json`，重启、升级和重置不改写源时间。行情已知休市、metadata超过120秒或到达休市时间时，缓存也不可用于模拟成交。QQQ盘口和逐笔时效要求不放宽。旧公共报价缓存不再用于新成交；每次启动或更换 token 后须先取得一份有效鉴权报价，才允许复用持久缓存。token 缺失、过期或 HTTP 401/403 时缓存也停用，暂停新开仓与模拟对冲，已有 Lighter 订单的已确认模拟成交继续记账。不会回退到公共报价。
 
@@ -433,7 +433,7 @@ HTTP冷却独立于缓存可用性。每次 Var POST 询价占用3秒预算，42
 curl -fsSL https://raw.githubusercontent.com/hxx344/variational-grid/main/install.sh | sudo bash -s -- --qqq-hedge
 ```
 
-单独更新行情会话不会重置账本；本次 v3 升级改变止盈成交口径，识别到默认旧配置时会按下文迁入新一轮模拟。安装器复用 `/etc/variational-grid/config.json` 的 `session_file`（默认 `/var/lib/variational-grid/session.json`），缺失或过期时在服务器终端隐藏输入 vr-token。运行中更新该文件后自动恢复，无需重启。
+单独更新行情会话不会重置账本；本次 v3 升级改变止盈成交口径，识别到默认旧配置时会按下文迁入新一轮模拟。安装器保留 `/etc/variational-grid/config.json` 的 `session_file`（默认 `/var/lib/variational-grid/session.json`）；缺失或过期也继续完成部署，不读取终端输入。部署后在 QQQ 页面补填，运行中更新该文件后自动恢复，无需重启。
 
 配置在 `/etc/variational-grid/qqq-hedge.json`，首次安装默认数据目录 `/var/lib/variational-grid/qqq-hedge-scalper-v3/`。识别到默认 v1/v2 剥头皮三组，或历史默认九组/三组固定锚点配置时，安装器备份原配置为 `qqq-hedge.before-scalper-v3.json`，将原目录名加上 `-scalper-v3` 后开始支持 GTT 止盈的新三组模拟。旧配置、旧持仓与损益账本、已有 v1/v2 备份和 CL/BZ 数据均原样保留；新一轮从空仓与零统计开始，仅继承有效鉴权报价缓存和限流冷却。自定义时序、TP、组合或经济参数不会被自动覆盖；自定义配置需保留原参数，将 `scalper.model` 改为 `perp_dex_scalper_v3` 并指定新的空 `output_dir` 后再运行。重复执行采用增量更新，未变化时复用代码和验证结果，不重复重启；服务器仅执行快速离线部署检查，完整测试在 CI 执行。
 

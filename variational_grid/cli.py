@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sqlite3
 import time
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 from .client import CandidateSession, Client, USER_AGENT, import_curl, save_session, token_expiry
@@ -34,6 +35,16 @@ def paired(function):
         return [job.result() for job in jobs]
 
 
+def _read_session_token():
+    try:
+        with warnings.catch_warnings():
+            # getpass otherwise falls back to input that may echo the credential.
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            return getpass.getpass("vr-token (hidden): ").strip()
+    except (getpass.GetPassWarning, EOFError, OSError):
+        raise GridError("Hidden token input is unavailable; use the QQQ dashboard's Update Var token button or run init-session in an interactive terminal") from None
+
+
 def init_session(args):
     config_path = Path(args.config)
     if not config_path.exists():
@@ -48,7 +59,7 @@ def init_session(args):
         except (OSError, UnicodeError):
             raise GridError("Could not read the captured request file") from None
     else:
-        data = {"token": getpass.getpass("vr-token (hidden): ").strip(), "user_agent": USER_AGENT}
+        data = {"token": _read_session_token(), "user_agent": USER_AGENT}
     if token_expiry(data["token"]) <= time.time() + 30:
         raise GridError("Session is expired or expiring; capture a fresh session")
     candidate = CandidateSession(data)

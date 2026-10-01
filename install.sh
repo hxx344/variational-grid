@@ -25,7 +25,9 @@ Unchanged dependencies, validated code and running services are reused.
   --single   Explicitly select the historical CL/BZ single grid using config.json.
   --cleanup  Reclaim obsolete deployments without downloading or restarting.
   --help     Show this help without installing anything.
-All modes reuse a saved vr-token or ask for hidden input; Lighter data stays public.
+Deployment never asks for vr-token; saved sessions are preserved.
+QQQ users can add or refresh it from the dashboard's Update Var token button.
+Authenticated paper pricing waits for a valid session; Lighter data stays public.
 No wallet key is needed.
 HELP
 }
@@ -551,18 +553,7 @@ PY
   if (( cl_bz_active )); then validate_settings; fi
   echo 'QQQ public feed / US100 vr-token authenticated paper pricing selected; existing simulation ledgers are preserved.'
 fi
-if ! (cd "$release" && runuser -u "$account" -- python3 -m variational_grid check-session --config "$conf/$config_name"); then
-  echo 'A valid login session is needed for quantity-specific indicative quotes; public candles and statistics do not require one.'
-  echo 'Paste only the vr-token cookie when prompted (input is hidden). No wallet private key is needed.'
-  # /dev/tty keeps this interactive even when the installer arrives through curl | bash.
-  if [[ ${VARIATIONAL_SESSION_STDIN:-0} == 1 ]]; then
-    [[ -t 0 ]] || { echo 'A terminal is required to import vr-token; rerun the deployment from an interactive SSH terminal.' >&2; exit 1; }
-    (cd "$release" && runuser -u "$account" -- python3 -m variational_grid init-session --config "$conf/$config_name")
-  else
-    (cd "$release" && runuser -u "$account" -- python3 -m variational_grid init-session --config "$conf/$config_name" </dev/tty)
-  fi
-fi
-# All market runners reload the protected session file without a restart.
+# Credential availability must not block service installation or dashboard access.
 if [[ $mode == compare ]]; then
   (cd "$release" && python3 - "$conf/experiments.json" <<'PY'
 import sys
@@ -771,7 +762,13 @@ fi
 touch "$release/.install-ready"
 storage prune "$old_current"
 
-echo 'Paper simulation ready. Settings and ledger are preserved on repeat installation.'
+echo 'Deployment ready. Settings, saved session and ledger are preserved on repeat installation.'
+if [[ $mode == qqq-hedge ]]; then
+  echo 'vr-token is optional during deployment. Add or refresh it using the dashboard Update Var token button (更新 Var token).'
+  echo 'Missing or invalid sessions pause authenticated paper actions; a verified dashboard update is loaded automatically without restart.'
+else
+  echo 'Authenticated paper pricing requires a valid saved session. Use init-session separately if it needs to be added or refreshed.'
+fi
 printf 'Service mode: %s\n' "$mode"
 printf 'Strategy: %s\n' "$service_description"
 if (( cl_bz_active )); then
