@@ -1,5 +1,9 @@
 name: Tests
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -29,3 +33,24 @@ jobs:
         run: python -m variational_grid qqq-demo --output data/qqq-demo
       - if: runner.os == 'Linux'
         run: bash -n install.sh
+  release:
+    needs: unittest
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: deployment-release-main
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python deploy/package-release.py --commit "$GITHUB_SHA"
+      - run: python tests/smoke_release.py release-output
+      - name: Publish immutable deployment assets after every required check
+        run: python deploy/publish-release.py release-output
+        env:
+          GH_TOKEN: ${{ github.token }}

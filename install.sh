@@ -2,6 +2,135 @@
 # Debian 12+ / Ubuntu 24.04+, systemd. All orders are simulated.
 set -euo pipefail
 umask 077
+# BEGIN CI RELEASE HELPERS -- keep embedded copies identical to deploy/release-common.sh
+# Only discovery uses latest; the archive is always fetched from its immutable commit tag.
+ci_release_resolve() {
+  local repository=$1 workspace=$2 manifest values
+  [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+  CI_RELEASE_REPOSITORY=$repository
+  CI_RELEASE_WORK=$workspace
+  mkdir -p -- "$workspace" || return 1
+  manifest="$workspace/release-manifest.json"
+  if ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+    --retry 3 --connect-timeout 15 --max-time 90 --max-filesize 1048576 \
+    "https://github.com/$repository/releases/latest/download/release-manifest.json" -o "$manifest"; then
+    printf '[CI] %s 暂无可用部署清单或下载失败；现有服务保持原样。\n' "$repository" >&2
+    return 1
+  fi
+  values=$(python3 - "$manifest" "$repository" "$(uname -m)" <<'CI_MANIFEST_PY'
+import json, re, sys
+from pathlib import Path
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+try:
+    data = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+    architecture = {'x86_64': 'linux-x64', 'aarch64': 'linux-arm64', 'arm64': 'linux-arm64'}[sys.argv[3]]
+    require(type(data['schema']) is int and data['schema'] == 1 and data['repository'] == sys.argv[2], 'repository/schema mismatch')
+    commit = data['commit']
+    require(re.fullmatch(r'[a-f0-9]{40}', commit), 'invalid commit')
+    require(data['tag'] == 'deploy-' + commit, 'tag/commit mismatch')
+    item = data['artifacts'][architecture]
+    require(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*\.tar\.gz', item['file']), 'invalid archive name')
+    for key in ('sha256', 'application_key'):
+        require(re.fullmatch(r'[a-f0-9]{64}', item[key]), 'invalid ' + key)
+    node = data.get('node_version', '')
+    require(not node or re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', node), 'invalid Node version')
+    print('\n'.join([commit, data['tag'], item['file'], item['sha256'], item['application_key'], node]))
+except (OSError, ValueError, KeyError, TypeError, AssertionError) as error:
+    print('[CI] Invalid deployment manifest: ' + str(error), file=sys.stderr)
+    sys.exit(1)
+CI_MANIFEST_PY
+  ) || return 1
+  local -a fields
+  mapfile -t fields <<< "$values"
+  CI_RELEASE_COMMIT=${fields[0]}
+  CI_RELEASE_TAG=${fields[1]}
+  CI_RELEASE_FILE=${fields[2]}
+  CI_RELEASE_SHA256=${fields[3]}
+  CI_RELEASE_APPLICATION_KEY=${fields[4]}
+  CI_RELEASE_NODE_VERSION=${fields[5]:-}
+  printf '[CI] %s 最新可用部署包：%s。\n' "$repository" "${CI_RELEASE_COMMIT:0:12}"
+}
+
+ci_release_extract() {
+  local cache=$1 destination=$2 archive temporary actual
+  [[ ! -L "$cache" && ( ! -e "$cache" || -d "$cache" ) ]] || { printf '[CI] Invalid archive cache.\n' >&2; return 1; }
+  mkdir -p -- "$cache" || return 1
+  [[ $(stat -c %u "$cache") == "$EUID" ]] || { printf '[CI] Archive cache has an unexpected owner.\n' >&2; return 1; }
+  archive="$cache/$CI_RELEASE_SHA256.tar.gz"
+  [[ ! -L "$archive" && ( ! -e "$archive" || -f "$archive" ) ]] || return 1
+  actual=''
+  if [[ -f "$archive" ]]; then actual=$(sha256sum "$archive" | cut -d ' ' -f1) || return 1; fi
+  if [[ "$actual" != "$CI_RELEASE_SHA256" ]]; then
+    temporary=$(mktemp "$cache/.download.XXXXXXXX") || return 1
+    if ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+      --retry 3 --connect-timeout 15 --max-time 600 --max-filesize 2147483648 \
+      "https://github.com/$CI_RELEASE_REPOSITORY/releases/download/$CI_RELEASE_TAG/$CI_RELEASE_FILE" -o "$temporary"; then
+      rm -f -- "$temporary"
+      return 1
+    fi
+    actual=$(sha256sum "$temporary" | cut -d ' ' -f1) || { rm -f -- "$temporary"; return 1; }
+    if [[ "$actual" != "$CI_RELEASE_SHA256" ]]; then
+      printf '[CI] 部署包校验失败；现有服务保持原样。\n' >&2
+      rm -f -- "$temporary"
+      return 1
+    fi
+    chmod 0644 "$temporary" || { rm -f -- "$temporary"; return 1; }
+    mv -f -- "$temporary" "$archive" || return 1
+  else
+    printf '[CI] 部署包已缓存且校验通过，跳过下载。\n'
+  fi
+  python3 - "$archive" "$destination" "$CI_RELEASE_COMMIT" "$CI_RELEASE_APPLICATION_KEY" <<'CI_EXTRACT_PY'
+import os, shutil, sys, tarfile
+from pathlib import Path, PurePosixPath
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+try:
+    destination = Path(sys.argv[2])
+    require(not destination.is_symlink(), 'destination cannot be a symlink')
+    destination.mkdir(parents=True, exist_ok=True)
+    require(not any(destination.iterdir()), 'destination must be empty')
+    with tarfile.open(sys.argv[1], 'r:gz') as archive:
+        members = []
+        names, total = set(), 0
+        for member in archive:
+            require(len(members) < 200000, 'too many archive entries')
+            path = PurePosixPath(member.name)
+            require(not path.is_absolute() and '..' not in path.parts and '\\' not in member.name and ':' not in member.name, 'unsafe archive path')
+            require(member.isdir() or member.isfile(), 'archive links and special files are forbidden')
+            name = str(path)
+            require(name not in names, 'duplicate archive entry')
+            names.add(name)
+            total += member.size
+            require(0 <= member.size and total <= 2147483648, 'archive too large')
+            members.append(member)
+        for member in members:
+            path = destination.joinpath(*PurePosixPath(member.name).parts)
+            if member.isdir():
+                path.mkdir(parents=True, exist_ok=True)
+                path.chmod(0o755)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with archive.extractfile(member) as source, path.open('xb') as target:
+                    shutil.copyfileobj(source, target)
+                path.chmod(0o755 if member.mode & 0o111 else 0o644)
+    destination.chmod(0o755)
+    for directory in destination.rglob('*'):
+        if directory.is_dir():
+            directory.chmod(0o755)
+    require((destination / '.release-commit').read_text().strip() == sys.argv[3], 'archive commit mismatch')
+    require((destination / '.release-application-key').read_text().strip() == sys.argv[4], 'archive application key mismatch')
+except (OSError, ValueError, EOFError, tarfile.TarError, AssertionError) as error:
+    print('[CI] Invalid deployment archive: ' + str(error), file=sys.stderr)
+    sys.exit(1)
+CI_EXTRACT_PY
+}
+# END CI RELEASE HELPERS
+
+deploy_mode=${PROJECT_DEPLOY_MODE:-source}
+case "$deploy_mode" in source|ci) ;; *) printf 'PROJECT_DEPLOY_MODE must be source or ci.\n' >&2; exit 1 ;; esac
 requested_mode=
 requested_cl_bz=0
 cleanup_only=0
@@ -132,7 +261,7 @@ class DeploymentStorage:
             return False
         if re.fullmatch(r'\.staging\.[A-Za-z0-9]{6}', path.name):
             return self.marker(path, '.install-owned')
-        if not re.fullmatch(r'[0-9a-f]{40}', path.name):
+        if not re.fullmatch(r'[0-9a-f]{40}(?:-ci)?', path.name):
             return False
         if self.marker(path, '.install-owned'):
             return True
@@ -196,7 +325,7 @@ class DeploymentStorage:
             return
         keys = set()
         for release in self.releases.iterdir():
-            if self.managed(release) and re.fullmatch(r'[0-9a-f]{40}', release.name):
+            if self.managed(release) and re.fullmatch(r'[0-9a-f]{40}(?:-ci)?', release.name):
                 key = self.validation_key(release)
                 if key is None:
                     return  # Cannot establish references: retain the small stamps.
@@ -283,7 +412,9 @@ installer_source=''
 if [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]} ]]; then
   installer_source=$(readlink -f -- "${BASH_SOURCE[0]}")
 fi
-staging= deployment= new_release= old_current=
+staging= deployment= new_release= old_current= ci_work=
+activation_started=0
+ci_changed_services=()
 if (( cleanup_only )) && [[ ! -e $app ]]; then
   echo 'No deployment to clean.'; exit 0
 fi
@@ -296,12 +427,14 @@ old_current=$(readlink -f "$app/current" 2>/dev/null || true)
 cleanup() {
   local status=$? candidate=''
   trap - EXIT INT TERM
+  if [[ $status != 0 && $activation_started == 1 ]]; then rollback_ci || true; fi
   [[ $status == 0 ]] || candidate=$new_release
   if [[ -n $staging || -n $deployment || -n $candidate ]]; then
     # Refresh all process directories before deleting a failed candidate.
     # Failed inspection retains it; configuration and active code take priority.
     storage abandon "$staging" "$deployment" "$candidate" || true
   fi
+  if [[ -n $ci_work && $ci_work == "$app/.ci-release."* && -d $ci_work && ! -L $ci_work ]]; then rm -rf -- "$ci_work"; fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -324,7 +457,9 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 export PYTHONDONTWRITEBYTECODE=1
 missing_packages=()
-for package in python3 git ca-certificates; do
+system_packages=(python3 ca-certificates)
+if [[ $deploy_mode == source ]]; then system_packages+=(git); else system_packages+=(curl); fi
+for package in "${system_packages[@]}"; do
   if [[ $(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true) != installed ]]; then
     missing_packages+=("$package")
   fi
@@ -364,7 +499,11 @@ id "$account" >/dev/null 2>&1 || useradd --system --home-dir "$state" --shell /u
 install -d -m 755 "$app" "$app/releases" "$conf"
 install -d -m 700 -o "$account" -g "$account" "$state"
 require_space "$app" 8192 128
-if [[ ! -d "$app/source/.git" ]]; then
+if [[ $deploy_mode == ci ]]; then
+  ci_work=$(mktemp -d "$app/.ci-release.XXXXXXXX")
+  ci_release_resolve hxx344/variational-grid "$ci_work"
+  revision=$CI_RELEASE_COMMIT
+elif [[ ! -d "$app/source/.git" ]]; then
   require_space "$app" 196608 8192
   git clone --depth 1 --branch main "$repository" "$app/source"
   revision=$(git -C "$app/source" rev-parse 'origin/main^{commit}')
@@ -387,12 +526,21 @@ else
 fi
 [[ $revision =~ ^[a-f0-9]{40}$ ]] || exit 1
 release="$app/releases/$revision"
+if [[ $deploy_mode == ci ]]; then
+  release="$release-ci"
+  if [[ -n $old_current && -f $old_current/.install-ready && -f $old_current/.release-inputs.json &&
+        $(cat "$old_current/.release-application-key" 2>/dev/null || true) == "$CI_RELEASE_APPLICATION_KEY" ]]; then
+    release=$old_current
+    echo 'CI runtime inputs unchanged; reusing the checked release without downloading its archive.'
+  fi
+fi
 # Version the quick check separately from the legacy full-test cache.
 # Docs/tests-only revisions reuse it; failed checks never write a success stamp.
 validation_key=$({
   printf '%s\n' 'quick-preflight-v1'
   python3 -c 'import sys, sqlite3; print(sys.version, sys.implementation.name, sys.implementation.cache_tag, sys.executable, sqlite3.sqlite_version)'
-  git -C "$app/source" ls-tree -r "$revision" -- variational_grid deploy_check.py install.sh config.example.json experiments.example.json inventory.example.json qqq-hedge.example.json cl-bz-scalper.example.json pyproject.toml
+  if [[ $deploy_mode == ci ]]; then printf '%s\n' "ci-preflight-v1:$CI_RELEASE_APPLICATION_KEY"
+  else git -C "$app/source" ls-tree -r "$revision" -- variational_grid deploy_check.py install.sh config.example.json experiments.example.json inventory.example.json qqq-hedge.example.json cl-bz-scalper.example.json pyproject.toml; fi
 } | sha256sum | cut -d ' ' -f1)
 install -d -m 755 "$app/validated"
 validate_release() {
@@ -407,16 +555,39 @@ validate_release() {
 if [[ ! -d "$release" ]]; then
   require_space "$app" 131072 4096
   staging=$(mktemp -d "$app/releases/.staging.XXXXXX")
+  if [[ $deploy_mode == ci ]]; then
+    if ! ci_release_extract "$app/ci-archives" "$staging"; then
+      printf 'variational-grid\n' >"$staging/.install-owned"
+      exit 1
+    fi
+  else git -C "$app/source" archive "$revision" | tar -x -C "$staging"; fi
   printf 'variational-grid\n' >"$staging/.install-owned"
-  git -C "$app/source" archive "$revision" | tar -x -C "$staging"
   validate_release "$staging"
   chmod -R u=rwX,go=rX "$staging"
   mv -- "$staging" "$release"
   new_release=$release
   staging=
 else
+  if [[ $deploy_mode == ci ]]; then
+    [[ -f $release/.release-inputs.json && $(cat "$release/.release-application-key" 2>/dev/null || true) == "$CI_RELEASE_APPLICATION_KEY" ]] || { echo 'Existing CI release is incomplete.' >&2; exit 1; }
+  fi
   validate_release "$release"
 fi
+release_tree() {
+  local kind=$1
+  if [[ $deploy_mode == ci ]]; then
+    python3 - "$release/.release-inputs.json" "$kind" <<'CI_TREE_PY'
+import json, sys
+from pathlib import Path
+value = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))[sys.argv[2] + '_tree']
+if not isinstance(value, str) or not value:
+    raise ValueError('Missing runtime input tree')
+sys.stdout.write(value)
+CI_TREE_PY
+  elif [[ $kind == engine ]]; then
+    git -C "$app/source" ls-tree -r "$revision" -- variational_grid | sed '\|[[:space:]]variational_grid/web/|d; \|[[:space:]]variational_grid/dashboard.py$|d; \|[[:space:]]variational_grid/hub.py$|d'
+  else git -C "$app/source" ls-tree -r "$revision" -- variational_grid; fi
+}
 require_space "$conf" 16384 512
 require_space "$state" 16384 512
 if [[ ! -f "$conf/config.json" ]]; then
@@ -611,7 +782,7 @@ PY
 engine_key=$({
   printf '%s\n' "$settings_key"
   python3 --version
-  git -C "$app/source" ls-tree -r "$revision" -- variational_grid | sed '\|[[:space:]]variational_grid/web/|d; \|[[:space:]]variational_grid/dashboard.py$|d; \|[[:space:]]variational_grid/hub.py$|d'
+  release_tree engine
 } | sha256sum | cut -d ' ' -f1)
 cl_bz_settings_key=
 cl_bz_engine_key=
@@ -620,17 +791,63 @@ if (( cl_bz_active )); then
   cl_bz_engine_key=$({
     printf '%s\n' "$cl_bz_settings_key"
     python3 --version
-    git -C "$app/source" ls-tree -r "$revision" -- variational_grid | sed '\|[[:space:]]variational_grid/web/|d; \|[[:space:]]variational_grid/dashboard.py$|d; \|[[:space:]]variational_grid/hub.py$|d'
+    release_tree engine
   } | sha256sum | cut -d ' ' -f1)
 fi
 web_key=$({
   printf '%s\n' "$settings_key"
   if (( cl_bz_active )); then printf '%s\n' "$cl_bz_settings_key"; fi
   python3 --version
-  git -C "$app/source" ls-tree -r "$revision" -- variational_grid
+  release_tree web
 } | sha256sum | cut -d ' ' -f1)
 deployment=$(mktemp -d "$app/.deploy.XXXXXX")
 printf 'variational-grid\n' >"$deployment/.install-owned"
+prepare_ci_rollback() {
+  [[ $deploy_mode == ci ]] || return 0
+  local service file
+  mkdir "$deployment/previous"
+  for service in variational-grid.service variational-grid-web.service variational-grid-cl-bz.service; do
+    if [[ -f /etc/systemd/system/$service ]]; then cp -p -- "/etc/systemd/system/$service" "$deployment/previous/$service"; fi
+    if systemctl is-active --quiet "$service"; then touch "$deployment/previous/$service.active"; fi
+    if systemctl is-enabled --quiet "$service"; then touch "$deployment/previous/$service.enabled"; fi
+  done
+  for file in applied-engine applied-web applied-cl-bz applied-units; do
+    [[ ! -f $app/$file ]] || cp -p -- "$app/$file" "$deployment/previous/$file"
+  done
+  for file in mode cl-bz-enabled; do
+    [[ ! -f $conf/$file ]] || cp -p -- "$conf/$file" "$deployment/previous/config-$file"
+  done
+  activation_started=1
+}
+rollback_ci() {
+  local service file changed
+  echo 'CI deployment failed; restoring the previous release and service configuration.' >&2
+  if [[ -n $old_current ]]; then
+    ln -sfn "$old_current" "$app/current.rollback"
+    mv -Tf "$app/current.rollback" "$app/current"
+  else rm -f -- "$app/current"; fi
+  for service in variational-grid.service variational-grid-web.service variational-grid-cl-bz.service; do
+    if [[ -f $deployment/previous/$service ]]; then cp -p -- "$deployment/previous/$service" "/etc/systemd/system/$service"
+    else rm -f -- "/etc/systemd/system/$service"; fi
+  done
+  for file in applied-engine applied-web applied-cl-bz applied-units; do
+    if [[ -f $deployment/previous/$file ]]; then cp -p -- "$deployment/previous/$file" "$app/$file"
+    else rm -f -- "$app/$file"; fi
+  done
+  for file in mode cl-bz-enabled; do
+    if [[ -f $deployment/previous/config-$file ]]; then cp -p -- "$deployment/previous/config-$file" "$conf/$file"
+    else rm -f -- "$conf/$file"; fi
+  done
+  systemctl daemon-reload || true
+  for service in "${ci_changed_services[@]}"; do
+    if [[ -f $deployment/previous/$service.enabled ]]; then systemctl enable "$service" || true
+    else systemctl disable "$service" || true; fi
+    if [[ -f $deployment/previous/$service.active ]]; then systemctl restart "$service" || true
+    else systemctl stop "$service" || true; fi
+  done
+  activation_started=0
+}
+prepare_ci_rollback
 cat >"$deployment/variational-grid.service" <<'UNIT'
 [Unit]
 Description=Variational paper strategy
@@ -696,11 +913,13 @@ WantedBy=multi-user.target
 UNIT
 elif [[ -f /etc/systemd/system/variational-grid-web.service ]]; then
   if systemctl is-active --quiet variational-grid-web.service || systemctl is-enabled --quiet variational-grid-web.service; then
+    [[ $deploy_mode != ci ]] || ci_changed_services+=(variational-grid-web.service)
     systemctl disable --now variational-grid-web.service
   fi
 fi
 if (( ! cl_bz_active )) && [[ -f /etc/systemd/system/variational-grid-cl-bz.service ]]; then
   if systemctl is-active --quiet variational-grid-cl-bz.service || systemctl is-enabled --quiet variational-grid-cl-bz.service; then
+    [[ $deploy_mode != ci ]] || ci_changed_services+=(variational-grid-cl-bz.service)
     systemctl disable --now variational-grid-cl-bz.service
   fi
 fi
@@ -743,8 +962,12 @@ if $units_changed || [[ $(cat "$app/applied-units" 2>/dev/null || true) != "$uni
 fi
 apply_service() {
   local service=$1 key=$2 unit_changed=$3 stamp=$4
-  if ! systemctl is-enabled --quiet "$service"; then systemctl enable "$service"; fi
+  if ! systemctl is-enabled --quiet "$service"; then
+    [[ $deploy_mode != ci ]] || ci_changed_services+=("$service")
+    systemctl enable "$service"
+  fi
   if [[ $(cat "$stamp" 2>/dev/null || true) != "$key" ]] || $unit_changed || ! systemctl is-active --quiet "$service"; then
+    [[ $deploy_mode != ci ]] || ci_changed_services+=("$service")
     systemctl restart "$service"
     systemctl --no-pager --full status "$service"
     printf '%s\n' "$key" >"$stamp"
@@ -760,6 +983,7 @@ if [[ $mode != run ]]; then
   apply_service variational-grid-web.service "$web_key" "$web_unit_changed" "$app/applied-web"
 fi
 touch "$release/.install-ready"
+activation_started=0
 storage prune "$old_current"
 
 echo 'Deployment ready. Settings, saved session and ledger are preserved on repeat installation.'

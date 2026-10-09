@@ -28,7 +28,7 @@ class InstallerValidationTests(unittest.TestCase):
         self.companion = json.loads((project / 'cl-bz-scalper.example.json').read_text())
         self.companion.update(base_config=str(self.conf / 'config.json'), output_dir=str(self.state / 'cl-bz-scalper'))
         self.write('cl-bz-scalper.json', self.companion)
-        installer = (project / 'install.sh').read_text()
+        installer = (project / 'install.sh').read_text(encoding='utf-8')
         helper = installer.split('python3 - "$mode" "$cl_bz_active" <<\'PY\'\n', 1)[1].split('\nPY\n', 1)[0]
         helper = helper.replace('/etc/variational-grid', self.conf.as_posix())
         helper = helper.replace('/var/lib/variational-grid', self.state.as_posix())

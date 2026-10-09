@@ -45,7 +45,7 @@ class InstallTests(unittest.TestCase):
         self.unit = units / "variational-grid.service"
         self.web_unit = units / "variational-grid-web.service"
         self.cl_bz_unit = units / "variational-grid-cl-bz.service"
-        installer = (self.project / "install.sh").read_text()
+        installer = (self.project / "install.sh").read_text(encoding="utf-8")
         for original, replacement in (
             ("/opt/variational-grid", self.app),
             ("/etc/variational-grid", self.conf),
@@ -128,7 +128,7 @@ if name == "runuser":
             path = self.bin / name
             path.write_text(shim)
             path.chmod(0o755)
-        self.env = {**os.environ, "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
+        self.env = {**os.environ, "PATH": str(self.bin) + os.pathsep + os.environ["PATH"], "PROJECT_DEPLOY_MODE": "source",
                     "GRID_INSTALL_TEST_LOG": str(self.log), "PYTHONDONTWRITEBYTECODE": "1",
                     "GRID_INSTALL_TEST_SERVICE_STATE": str(self.service_state),
                     "GRID_INSTALL_TEST_VALIDATION_LOG": str(self.validation_log)}

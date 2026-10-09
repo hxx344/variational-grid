@@ -204,6 +204,8 @@ python -m http.server 0 --bind 127.0.0.1 --directory data/comparison-pct-05-1-2-
 
 ## Linux 一键部署与升级
 
+安装器支持 `PROJECT_DEPLOY_MODE=ci`：下载最新通过检查的 GitHub Release 运行包，固定提交标签并验证 SHA-256。配置、会话和账本保留，网页变化只重启网页服务；代码未变跳过下载和重启，坏包不切换，服务更新失败恢复上一版本。当前默认仍为 `source`；可用 `curl -fsSL https://raw.githubusercontent.com/hxx344/variational-grid/main/install.sh | sudo env PROJECT_DEPLOY_MODE=ci bash` 选择 CI 包，`PROJECT_DEPLOY_MODE=source` 保留源码方式。
+
 适用于 Debian 12+ / Ubuntu 24.04+、systemd：
 
 ```bash
