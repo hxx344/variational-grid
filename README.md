@@ -204,7 +204,9 @@ python -m http.server 0 --bind 127.0.0.1 --directory data/comparison-pct-05-1-2-
 
 ## Linux 一键部署与升级
 
-安装器默认使用 `PROJECT_DEPLOY_MODE=ci`：下载最新通过检查的 GitHub Release 运行包，固定提交标签并验证 SHA-256。配置、会话和账本保留，网页变化只重启网页服务；代码未变跳过下载和重启，坏包不切换，服务更新失败恢复上一版本。直接运行下方一键命令即可使用 CI 包；需要源码方式时使用 `curl -fsSL https://raw.githubusercontent.com/hxx344/variational-grid/main/install.sh | sudo env PROJECT_DEPLOY_MODE=source bash`。CI 尚未通过的新提交不会覆盖已有可用包。
+安装器默认使用 `PROJECT_DEPLOY_MODE=ci`：下载经过 CI 验证并明确发布的最新正式运行包，固定提交标签并验证 SHA-256。配置、会话和账本保留，网页变化只重启网页服务；代码未变跳过下载和重启，坏包不切换，服务更新失败恢复上一版本。直接运行下方一键命令即可使用正式包；需要源码方式时使用 `curl -fsSL https://raw.githubusercontent.com/hxx344/variational-grid/main/install.sh | sudo env PROJECT_DEPLOY_MODE=source bash`。尚未晋级正式版的新提交不会覆盖现有正式包。
+
+`main` CI 全部通过后，只发布 `deploy-<完整提交号>` 候选 Release（`prerelease`），不改变当前正式版。发布者在 GitHub Actions 选择 **[Publish stable release](.github/workflows/promote-release.yml)**，分支选 `main`，在 `commit` 中填写已通过本仓库 CI 的完整 40 位提交 SHA 后运行；核验清单和部署包后，候选才晋级为最新正式版。默认安装及工作台前端更新只使用正式版，未晋级的候选不会自动安装。
 
 适用于 Debian 12+ / Ubuntu 24.04+、systemd：
 
@@ -217,7 +219,7 @@ curl -fsSL https://raw.githubusercontent.com/hxx344/variational-grid/main/instal
 重复部署会按变化处理，输出会说明跳过的步骤：
 
 - 系统依赖已安装时跳过 `apt update/install`；缺少哪个包才安装哪个。
-- 先查询远端提交，所需 Git 对象已在本地时跳过拉取；已有对应 release 时跳过解压。
+- 默认查询最新正式版并固定清单中的提交，已校验且缓存的运行包跳过下载；源码模式才查询远端源码并复用已有 Git 对象，已有对应 release 时跳过解压。
 - 服务器部署只做离线快速预检：源码语法与模块导入、示例配置、网页资源和 SQLite 支持。完整回归测试及安装器集成测试由 GitHub Actions 执行，首次安装和代码升级均不在服务器运行 unittest，也无需安装 Node.js。
 - 快速预检按运行代码、部署脚本、示例配置、包配置及 Python/SQLite 环境缓存；测试和文档变化可直接复用缓存，检查失败不写成功标记。已有用户配置仍会在每次切换前验证。
 - 服务配置内容未变时不重写、不重复加载；代码与配置未变、服务正常时不重启。仅网页资源或 dashboard 模块变化只重启网页服务，共用运行代码变化重启相关服务。
