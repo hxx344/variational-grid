@@ -56,7 +56,7 @@ shutil.copyfile(Path(os.environ['GRID_CI_OUTPUT']) / name, target)
     def test_source_to_ci_noop_and_web_only_update_keep_engine_running(self):
         self.install()
         self.release()
-        self.env["PROJECT_DEPLOY_MODE"] = "ci"
+        self.env.pop("PROJECT_DEPLOY_MODE", None)
         self.log.write_text("")
         self.install()
         current = (self.app / "current").resolve()
@@ -95,7 +95,7 @@ shutil.copyfile(Path(os.environ['GRID_CI_OUTPUT']) / name, target)
         archive = Path(self.env["GRID_CI_OUTPUT"]) / manifest["artifacts"]["linux-x64"]["file"]
         valid = archive.read_bytes()
         archive.write_bytes(b"damaged archive")
-        self.env["PROJECT_DEPLOY_MODE"] = "ci"
+        self.env.pop("PROJECT_DEPLOY_MODE", None)
         self.install(expected=1)
         self.assertEqual((self.app / "current").resolve(), current)
         archive.write_bytes(valid)
