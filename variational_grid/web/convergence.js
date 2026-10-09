@@ -227,7 +227,7 @@
         historyRequest = null;
         const changed = range !== ui.range || generation !== data?.reset?.generation;
         historyDue = changed ? 0 : Date.now() + (succeeded ? 60000 : 10000);
-        if (hub.active()) {renderCharts(); historyTimer = setTimeout(refreshHistory,Math.max(0,historyDue-Date.now()));}
+        if (hub.active()) {renderCharts(); historyTimer = setTimeout(refreshHistory,hub.delay(Math.max(0,historyDue-Date.now())));}
       }
     }
   }
@@ -250,7 +250,7 @@
       else {$('notice').hidden = false; $('notice').textContent = connectionError; $('status').textContent = '连接中断'; $('status').className = 'status error';}
     } finally {
       clearTimeout(timeout);
-      if (request === snapshotRequest) {snapshotRequest = null; $('refresh').disabled = false; if (hub.active()) timer = setTimeout(refresh,10000);}
+      if (request === snapshotRequest) {snapshotRequest = null; $('refresh').disabled = false; if (hub.active()) timer = setTimeout(refresh,hub.delay(10000));}
     }
   }
   $('refresh').onclick = () => {historyDue = 0; refresh();};
@@ -296,7 +296,7 @@
   root.addEventListener('popstate',() => {setState(state(location.search),false);});
   let resize;
   new ResizeObserver(() => {clearTimeout(resize); resize = setTimeout(renderCharts,80);}).observe($('pnl-chart'));
-  hub.subscribe(active => {if (active) {historyDue = 0; refresh();} else {clearTimeout(timer); clearTimeout(historyTimer); snapshotRequest?.abort(); historyRequest?.abort();}});
+  hub.subscribe(active => {if (active) {clearTimeout(historyTimer); historyRequest?.abort(); historyRequest = null; historyDue = 0; refresh();} else {clearTimeout(timer); clearTimeout(historyTimer); snapshotRequest?.abort(); historyRequest?.abort();}});
   setInterval(() => {if (hub.active()) status();},1000);
   render(); refresh();
 })(typeof window !== 'undefined' ? window : globalThis);

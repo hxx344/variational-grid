@@ -461,18 +461,20 @@
     historyError = ''; renderCharts();
     try {
       const next = await readJSON('/api/qqq-history?range=' + encodeURIComponent(range) + '&through=' + encodeURIComponent(through), request.signal);
-      if (!window.GridHub.active() || !data?.summary || range !== state.range || generation !== data?.reset?.generation) return;
+      if (request !== historyController || !window.GridHub.active() || !data?.summary || range !== state.range || generation !== data?.reset?.generation) return;
       if (next.reset?.generation !== generation || next.history?.range !== range || !Array.isArray(next.history?.points)
           || !Array.isArray(next.history?.names) || next.history.names.length !== names().length
           || !names().every(name => next.history.names.includes(name)) || !(next.summary_ts <= through)) throw new Error('Unexpected history payload');
       data.history = next.history; succeeded = true;
     } catch (error) {
-      if (window.GridHub.active() && range === state.range && generation === data?.reset?.generation) historyError = loadError(error, true);
+      if (request === historyController && window.GridHub.active() && range === state.range && generation === data?.reset?.generation) historyError = loadError(error, true);
     } finally {
-      clearTimeout(timeout); historyController = null;
+      clearTimeout(timeout);
+      if (request !== historyController) return;
+      historyController = null;
       const changed = range !== state.range || generation !== data?.reset?.generation;
       historyDue = changed ? 0 : Date.now() + (succeeded ? 60000 : 10000);
-      if (window.GridHub.active()) {renderCharts(); historyTimer = setTimeout(refreshHistory, Math.max(0, historyDue - Date.now()));}
+      if (window.GridHub.active()) {renderCharts(); historyTimer = setTimeout(refreshHistory, window.GridHub.delay(Math.max(0, historyDue - Date.now())));}
     }
   }
   async function refresh() {
@@ -500,7 +502,7 @@
       else {$('notice').hidden = false; $('notice').textContent = connectionError; $('status').textContent = '连接中断'; $('status').className = 'status error';}
     } finally {
       clearTimeout(timeout);
-      if (request === controller) {$('refresh').disabled = false; if (window.GridHub.active()) timer = setTimeout(refresh, 10000);}
+      if (request === controller) {$('refresh').disabled = false; if (window.GridHub.active()) timer = setTimeout(refresh, window.GridHub.delay(10000));}
     }
   }
   $('reset').onclick = () => {resetGeneration = data?.reset?.generation; $('reset-dialog').showModal();};
@@ -542,7 +544,7 @@
   window.addEventListener('popstate', () => {state = M.state(location.search,names()); page = 0; selectedTs = null; historyDue = 0; render(); refresh();});
   let resize;
   new ResizeObserver(() => {clearTimeout(resize); resize = setTimeout(renderCharts,80);}).observe($('pnl-chart'));
-  window.GridHub.subscribe(active => {if (active) {historyDue = 0; refresh();} else {clearTimeout(timer); clearTimeout(historyTimer); controller?.abort(); historyController?.abort();}});
+  window.GridHub.subscribe(active => {if (active) {clearTimeout(historyTimer); historyController?.abort(); historyController = null; historyDue = 0; refresh();} else {clearTimeout(timer); clearTimeout(historyTimer); controller?.abort(); historyController?.abort();}});
   setInterval(() => {if (window.GridHub.active()) status();}, 1000);
   render(); refresh();
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -233,7 +233,7 @@
       else {$('notice').hidden = false; $('notice').textContent = '暂时无法读取监控数据，页面将自动重试。'; $('status').textContent = '连接中断'; $('status').className = 'status error';}
     } finally {
       clearTimeout(timeout);
-      if (request === controller) {$('refresh').disabled = false; if (window.GridHub.active()) timer = setTimeout(refresh, 10000);}
+      if (request === controller) {$('refresh').disabled = false; if (window.GridHub.active()) timer = setTimeout(refresh, window.GridHub.delay(10000));}
     }
   }
   $('reset').onclick = () => {resetGeneration = data?.reset?.generation; $('reset-balances').textContent = allRows().map(r => label(r) + '：' + M.number(r.initial_balance_usdc, 2) + ' USDC').join('；'); $('reset-dialog').showModal();};

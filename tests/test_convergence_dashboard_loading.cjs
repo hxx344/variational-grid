@@ -23,7 +23,7 @@ function page(search='') {
   const location = {search,pathname:'/cl-bz'};
   const document = {getElementById:node,querySelector:node,querySelectorAll:selector => selector.includes('data-range') ? ranges : selector.includes('data-view') ? tabs : [],
     addEventListener:(name,fn) => events[name]=fn,activeElement:null};
-  const window = {GridModel:M,GridHub:{active:() => active,subscribe:fn => activity=fn},addEventListener:(name,fn) => windowEvents[name]=fn};
+  const window = {GridModel:M,GridHub:{active:() => active,delay:ms => ms,subscribe:fn => activity=fn},addEventListener:(name,fn) => windowEvents[name]=fn};
   vm.runInNewContext(code,{window,document,location,URLSearchParams,AbortController,Date:class extends Date {static now() {return now;}},
     history:{pushState:(_state,_unused,url) => location.search=url},ResizeObserver:class {observe() {}},
     setTimeout:(fn,ms) => {timers.set(++serial,{fn,ms}); return serial;},clearTimeout:id => timers.delete(id),setInterval:fn => events.interval=fn,

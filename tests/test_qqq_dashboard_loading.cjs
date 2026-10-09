@@ -17,15 +17,15 @@ function page() {
   const location = {search:''};
   const document = {getElementById:node, querySelector:node, querySelectorAll:() => [],
     addEventListener:(name, fn) => events[name] = fn, activeElement:null};
-  const window = {GridModel:M,GridHub:{active:() => active,subscribe:fn => activity = fn},addEventListener() {}};
+  const window = {GridModel:M,GridHub:{active:() => active,delay:ms => ms,subscribe:fn => activity = fn},addEventListener() {}};
   vm.runInNewContext(fs.readFileSync('variational_grid/web/qqq.js', 'utf8'), {
     document,window,location,URLSearchParams,AbortController,Date,performance,
     history:{pushState:(_a,_b,url) => location.search = url},ResizeObserver:class {observe() {}},
     setTimeout:(fn,ms) => {timers.set(++serial,{fn,ms}); return serial;},
     clearTimeout:id => timers.delete(id),setInterval() {},
     fetch:(url,{signal}) => new Promise((resolve,reject) => {
-      const request = {url,signal,resolve,reject}; requests.push(request);
-      signal.addEventListener('abort',() => reject(Object.assign(new Error('aborted'),{name:'AbortError'})));
+      const request = {url,signal,resolve,reject,ignoreAbort:false}; requests.push(request);
+      signal.addEventListener('abort',() => {if (!request.ignoreAbort) reject(Object.assign(new Error('aborted'),{name:'AbortError'}));});
     }),
   });
   return {node,requests,respond(request,payload,status=200) {request.resolve({ok:status===200,status,json:async() => payload});},
@@ -46,6 +46,19 @@ function history(request,generation='g1') {
   return {reset:{generation,status:'idle'},summary_ts:ts,history:{range:query.get('range'),names:['a'],source_count:1,
     points:[{ts,segment:0,pnl:[1],exposure:[2],net_exposure:[3]}]}};
 }
+
+test('a foreground wake supersedes stalled history even when its transport ignores cancellation', async () => {
+  const p = page(); p.respond(p.requests[0],snapshot()); await flush();
+  const old = p.requests[1]; old.ignoreAbort = true;
+  p.active(true); assert.equal(old.signal.aborted,true);
+  p.respond(p.requests.at(-1),snapshot(745)); await flush();
+  const current = p.requests.at(-1); assert.notEqual(current,old);
+  p.respond(old,history(old)); await flush();
+  assert.match(p.node('history-note').textContent,/历史曲线正在加载/);
+  p.respond(current,history(current)); await flush();
+  assert.doesNotMatch(p.node('history-note').textContent,/历史曲线正在加载/);
+  assert.match(p.node('pnl-chart').innerHTML,/<svg/);
+});
 
 test('slow history never delays first render or restarts during snapshot refresh; failures recover separately', async() => {
   const p=page(); assert.equal(p.requests[0].url,'/api/qqq-snapshot');
