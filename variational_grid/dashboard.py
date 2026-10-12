@@ -102,14 +102,22 @@ def reduce_points(points, limit=900):
     for bucket in range(buckets):
         start, end = bucket * len(points) // buckets, (bucket + 1) * len(points) // buckets
         selected.update((start, end - 1))
-        for dim in range(dimensions):
-            def value(i):
-                p = points[i]
-                return [p["spread"], p["center"], *p["pnl"]][dim]
-            valid = [i for i in range(start, end) if value(i) is not None]
-            if valid:
-                selected.add(min(valid, key=value))
-                selected.add(max(valid, key=value))
+        extrema = [[None, None, None, None] for _ in range(dimensions)]
+        for i in range(start, end):
+            point = points[i]
+            values = [point["spread"], point["center"], *point["pnl"]]
+            for dim, bounds in enumerate(extrema):
+                value = values[dim]
+                if value is None:
+                    continue
+                # Strict comparisons preserve the first index when values tie.
+                if bounds[0] is None or value < bounds[0]:
+                    bounds[0], bounds[1] = value, i
+                if bounds[2] is None or value > bounds[2]:
+                    bounds[2], bounds[3] = value, i
+        for _, minimum, _, maximum in extrema:
+            if minimum is not None:
+                selected.update((minimum, maximum))
     return [points[i] for i in sorted(selected)]
 
 
