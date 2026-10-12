@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
+const { runInNewContext } = require('node:vm');
 const M = require('../variational_grid/web/model.js');
 
 test('percentage labels do not confuse effective dollar steps or legacy grids', () => {
@@ -51,6 +53,37 @@ test('unlimited funding is explicit and distinct from zero or missing limits', (
 test('time is Beijing time, independent of the viewer timezone', () => {
   assert.match(M.date(1735689600), /01.01.*08:00:00/);
   assert.match(M.date(1735689600, false, true), /2025/);
+});
+test('date formats preserve all short/year combinations and missing values', () => {
+  for (const short of [false, true]) for (const year of [false, true]) {
+    const expected = new Intl.DateTimeFormat('zh-CN', {timeZone:'Asia/Shanghai', ...(year ? {year:'numeric'} : {}), month:'2-digit',day:'2-digit', hour:'2-digit', minute:'2-digit', ...(short ? {} : {second:'2-digit'}), hourCycle:'h23'});
+    for (const value of [0, -1, 1735657199, 1735657200, 1735689600, '1735689600', 1709136000.125]) {
+      assert.equal(M.date(value, short, year), expected.format(new Date(Number(value) * 1000)));
+    }
+    for (const value of [null, undefined, '', NaN, Infinity, -Infinity, 'invalid']) {
+      assert.equal(M.date(value, short, year), '—');
+    }
+    assert.throws(() => M.date(1e20, short, year), RangeError);
+  }
+});
+test('date lazily constructs at most one formatter for each short/year combination', () => {
+  const options = [];
+  const sandbox = { Intl: { DateTimeFormat: class extends Intl.DateTimeFormat {
+    constructor(locale, format) { super(locale, format); options.push(format); }
+  } } };
+  runInNewContext(readFileSync(require.resolve('../variational_grid/web/model.js'), 'utf8'), sandbox);
+  const date = sandbox.GridModel.date;
+  assert.equal(options.length, 0);
+  for (const value of [null, undefined, '', NaN, Infinity, 'invalid']) assert.equal(date(value), '—');
+  assert.equal(options.length, 0);
+  for (const short of [false, true]) for (const year of [false, true]) {
+    const before = options.length;
+    const expected = M.date(1735689600, short, year);
+    for (let index = 0; index < 100; index++) assert.equal(date(1735689600, short, year), expected);
+    assert.equal(options.length, before + 1);
+  }
+  assert.equal(options.length, 4);
+  assert.ok(options.every(format => format.timeZone === 'Asia/Shanghai'));
 });
 test('URL state is repeatable and invalid filters fall back', () => {
   assert.deepEqual(M.state('?strategy=step-0.20&range=7d&view=trades', ['step-0.20']), {strategy:'step-0.20', range:'7d', view:'trades'});

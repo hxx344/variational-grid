@@ -18,9 +18,12 @@
   }
   const limitLabel = (row, field = 'entry_notional_limit_usdc') => row?.margin_limit_enabled === false ? '金额不限' : finite(row?.[field]) ? number(row[field], 2) + ' USDC' : '—';
   const escape = v => String(v ?? '').replace(/[&<>"']/g, x => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));
+  const dateFormatters = [];
   function date(ts, short = false, year = false) {
     if (!finite(ts)) return '—';
-    return new Intl.DateTimeFormat('zh-CN', {timeZone:'Asia/Shanghai', ...(year ? {year:'numeric'} : {}), month:'2-digit',day:'2-digit', hour:'2-digit', minute:'2-digit', ...(short ? {} : {second:'2-digit'}), hourCycle:'h23'}).format(new Date(Number(ts) * 1000));
+    const key = (short ? 1 : 0) + (year ? 2 : 0);
+    const formatter = dateFormatters[key] ??= new Intl.DateTimeFormat('zh-CN', {timeZone:'Asia/Shanghai', ...(year ? {year:'numeric'} : {}), month:'2-digit',day:'2-digit', hour:'2-digit', minute:'2-digit', ...(short ? {} : {second:'2-digit'}), hourCycle:'h23'});
+    return formatter.format(new Date(Number(ts) * 1000));
   }
   function state(search, names) {
     const q = new URLSearchParams(search);
